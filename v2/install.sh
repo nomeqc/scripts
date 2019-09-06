@@ -14,6 +14,7 @@ cat << EOF
         proxy_set_header Connection "upgrade";
         proxy_set_header Host \$http_host;
     }
+    
 EOF
 
 echo "修改nginx配置，开启拦截反向代理错误，在http{}中插入："
