@@ -15,6 +15,19 @@ wget -O go.sh https://install.direct/go.sh && sh go.sh
 (curl -L -s https://raw.githubusercontent.com/Nomeqc/scripts/master/v2ray/config.json)>/etc/v2ray/config.json
 service v2ray restart
 
+#等待2s检测 v2ray服务端口是否开放
+colorEcho ${BLUE} "正在检测v2ray服务是否已启动..."
+sleep 2s
+PID=`lsof -i:44222| grep -v "PID" | awk '{print $2}'`
+if [ "$PID" != "" ];
+then
+	colorEcho ${GREEN} "v2ray服务已启动"
+else
+	colorEcho ${RED} "v2ray服务启动失败"
+	exit
+fi
+
+
 echo -e "\n在网站的nginx配置文件中加入以下配置："
 conf=`cat << EOF
  location /v2 {
