@@ -24,20 +24,9 @@ conf=`cat << EOF
         proxy_set_header Upgrade \\$http_upgrade;
         proxy_set_header Connection "upgrade";
         proxy_set_header Host \\$http_host;
+        proxy_intercept_errors on;
+        error_page 400 /index.html;
     }
-EOF`
-colorEcho ${BLUE} "${conf}\n"
-
-echo  -e "修改nginx配置，开启拦截反向代理错误，在http{}中插入："
-conf=`cat << EOF
- proxy_intercept_errors on;
-EOF`
-colorEcho ${BLUE} "${conf}\n"
-
-
-echo -e "在网站nginx配置文件中加入400错误处理："
-conf=`cat << EOF
- error_page 400 /index.php;
 EOF`
 colorEcho ${BLUE} "${conf}\n"
 
