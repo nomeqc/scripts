@@ -12,7 +12,7 @@ colorEcho(){
 }
 
 wget -O go.sh https://install.direct/go.sh && sh go.sh
-(curl -L -s  https://raw.githubusercontent.com/Nomeqc/scripts/master/v2/config.json)>/etc/v2ray/config.json
+(curl -L -s https://raw.githubusercontent.com/Nomeqc/scripts/master/v2ray/config.json)>/etc/v2ray/config.json
 service v2ray restart
 
 echo -e "\n在网站的nginx配置文件中加入以下配置："
