@@ -51,7 +51,7 @@ echo -n "用户ID(id)："
 colorEcho ${BLUE} "2d2f5648-2646-4722-b31f-fd1369023e37"
 
 echo -n "额外ID(alertId)："
-colorEcho ${BLUE} "32"
+colorEcho ${BLUE} "0"
 
 echo -n "加密方式(security)："
 colorEcho ${BLUE} "auto"
