@@ -6,6 +6,12 @@ import shlex
 import subprocess
 import json
 
+'''
+使用方式：
+python3 ./runcmd.py 127.0.0.1:7777
+
+'''
+
 urls = (
   '/runcmd', 'runcmd',
   "/(.*)", "default"
