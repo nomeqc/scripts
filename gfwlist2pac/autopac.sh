@@ -1,6 +1,6 @@
 #!/bin/bash
 
-GFWLIST=https://vv.fallrainy.top/gfwrule/data/list.txt
+GFWLIST=https://tools.201992.xyz/gfwrule/data/list.txt
 PROXY=127.0.0.1:10808
 
 cd `dirname "${BASH_SOURCE[0]}"`
