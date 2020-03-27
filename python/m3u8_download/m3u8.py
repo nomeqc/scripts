@@ -41,12 +41,13 @@ class Downloader:
                 ts_list = zip(ts_list, [n for n in xrange(len(ts_list))])
                 if ts_list:
                     self.ts_total = len(ts_list)
-                    print(self.ts_total)
+                    print("共有 " + str(self.ts_total) + " 个片段")
                     g1 = gevent.spawn(self._join_file)
                     self._download(ts_list)
                     g1.join()
         else:
             print(r.status_code)
+            sys.exit()
 
     def _download(self, ts_list):
         self.pool.map(self._worker, ts_list)
@@ -93,27 +94,26 @@ class Downloader:
             outfile.close()
 
 if __name__ == '__main__':
-    m3u_url = sys.argv[1] if len(sys.argv) > 1 else ''
-    saved_dir = sys.argv[2] if len(sys.argv) > 2 else ''
-    saved_filename = sys.argv[3] if len(sys.argv) > 3 else ''
-    if m3u_url == "":
-        print('缺少参数m3u_url')
-        print('示例：./m3u8.py http://down.example.com/exp.m3u8 /home/video example.mp4')
+    m3u8_url = sys.argv[1] if len(sys.argv) > 1 else raw_input("请输入m3u8 url：")
+    saved_dir = sys.argv[2] if len(sys.argv) > 2 else raw_input("请输入保存的目录： ")
+    saved_filename = sys.argv[3] if len(sys.argv) > 3 else ('' if len(sys.argv) > 2 else raw_input("请输入保存的文件名[可选]："))
+    if m3u8_url == "":
+        print('❌m3u8_url不能为空')
+        print('格式：./m3u8.py [m3u8_url] [saved_dir] [saved_filename]')
+        print('示例：./m3u8.py http://example.com/exp.m3u8 /home/video example.ts')
         sys.exit()
     if saved_dir == "":
-        print('缺少参数saved_dir')
-        print('示例：./m3u8.py http://down.example.com/exp.m3u8 /home/video example.mp4')
+        print('❌saved_dir不能为空')
+        print('格式：./m3u8.py [m3u8_url] [saved_dir] [saved_filename]')
+        print('示例：./m3u8.py http://example.com/exp.m3u8 /home/video example.ts')
         sys.exit()
     downloader = Downloader(50)
-    # print(len(downloader.succed))
-    # m3u_url = 'http://127.0.0.1:8000/cs255.m3u'
-    # saved_dir = '/Users/fallrainy/Home/video'
-    # saved_filename = 'xxxx.mp4'
-    
-    print('下载 ' + m3u_url + ' 到 ' + os.path.join(saved_dir, saved_filename))
-    downloader.run(m3u_url, saved_dir)
+    print('下载 ' + m3u8_url)
+    downloader.run(m3u8_url, saved_dir)
+    file_name = downloader.succed.get(0, '')
+    filepath = os.path.join(downloader.dir, file_name.split('.')[0] + '_all.'+file_name.split('.')[-1])
     if saved_filename:
-        file_name = downloader.succed.get(0, '')
-        filepath = os.path.join(downloader.dir, file_name.split('.')[0] + '_all.'+file_name.split('.')[-1])
         os.rename(filepath, os.path.join(downloader.dir, saved_filename))
-    print('下载完成')
+        print('已保存到 ' + os.path.join(downloader.dir, saved_filename))
+    else:
+        print('已保存到 ' + filepath)
