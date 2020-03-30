@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python2
 #coding: utf-8
 
 from gevent import monkey
@@ -10,6 +10,7 @@ import urlparse
 import os
 import sys
 import time
+import math
 
 class Downloader:
     def __init__(self, pool_size, retry=3):
@@ -65,10 +66,13 @@ class Downloader:
                 r = self.session.get(url, timeout=20)
                 if r.ok:
                     file_name = url.split('/')[-1].split('?')[0]
-                    print(file_name)
                     with open(os.path.join(self.dir, file_name), 'wb') as f:
                         f.write(r.content)
                     self.succed[index] = file_name
+                    progress = int(math.floor(len(self.succed) / float(self.ts_total) * 100)) 
+                    s = "\r已下载 %d%% %s"%(progress,"#"*progress)   #\r表示回车但是不换行，利用这个原理进行百分比的刷新
+                    sys.stdout.write(s)       #向标准输出终端写内容
+                    sys.stdout.flush()        #立即将缓存的内容刷新到标准输出
                     return
             except:
                 retry -= 1
@@ -107,7 +111,7 @@ if __name__ == '__main__':
         print('格式：./m3u8.py [m3u8_url] [saved_dir] [saved_filename]')
         print('示例：./m3u8.py http://example.com/exp.m3u8 /home/video example.ts')
         sys.exit()
-    downloader = Downloader(50)
+    downloader = Downloader(10)
     print('下载 ' + m3u8_url)
     downloader.run(m3u8_url, saved_dir)
     file_name = downloader.succed.get(0, '')
