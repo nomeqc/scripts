@@ -46,7 +46,6 @@ class Downloader:
                 ts_list = zip(ts_list, [n for n in xrange(len(ts_list))])
                 if ts_list:
                     self.ts_total = len(ts_list)
-                    print("共有 " + str(self.ts_total) + " 个片段")
                     g1 = gevent.spawn(self._join_file)
                     self._download(ts_list)
                     g1.join()
@@ -73,8 +72,11 @@ class Downloader:
                     with open(os.path.join(self.dir, file_name), 'wb') as f:
                         f.write(r.content)
                     self.succed[index] = file_name
-                    progress = int(math.floor(len(self.succed) / float(self.ts_total) * 100)) 
-                    s = "\r已下载 %d%% %s"%(progress,"#"*progress)   #\r表示回车但是不换行，利用这个原理进行百分比的刷新
+                    progress = int(math.floor(len(self.succed) / float(self.ts_total) * 100))
+                    progress_step = 2.5
+                    total_step = int(math.ceil(100.0 / progress_step))
+                    current_step = int(total_step * (progress/100.0))
+                    s = "\r已下载 %d%% |%s%s| %d/%d"%(progress,"█"*current_step, " "*(total_step - current_step), len(self.succed), self.ts_total)   #\r表示回车但是不换行，利用这个原理进行百分比的刷新
                     sys.stdout.write(s)       #向标准输出终端写内容
                     sys.stdout.flush()        #立即将缓存的内容刷新到标准输出
                     return
@@ -115,7 +117,7 @@ if __name__ == '__main__':
         print('格式：./m3u8.py [m3u8_url] [saved_dir] [saved_filename]')
         print('示例：./m3u8.py http://example.com/exp.m3u8 /home/video example.ts')
         sys.exit()
-    downloader = Downloader(50)
+    downloader = Downloader(10)
     print('下载 ' + m3u8_url)
     downloader.run(m3u8_url, saved_dir)
 
@@ -126,3 +128,5 @@ if __name__ == '__main__':
         print('\n已保存到 ' + saved_filepath + '\n')
     else:
         print('\n已保存到 ' + tmp_filepath + '\n')
+
+
