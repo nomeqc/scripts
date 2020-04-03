@@ -11,6 +11,7 @@ import os
 import sys
 import time
 import math
+import uuid
 
 class Downloader:
     def __init__(self, pool_size, retry=3):
@@ -21,6 +22,7 @@ class Downloader:
         self.succed = {}
         self.failed = []
         self.ts_total = 0
+        self.tmp_filename = ''
 
     def _get_http_session(self, pool_connections, pool_maxsize, max_retries):
             session = requests.Session()
@@ -31,6 +33,7 @@ class Downloader:
 
     def run(self, m3u8_url, dir=''):
         self.dir = dir
+        self.tmp_filename = ''.join(str(uuid.uuid4()).split('-'))
         if self.dir and not os.path.isdir(self.dir):
             os.makedirs(self.dir)
 
@@ -38,6 +41,7 @@ class Downloader:
         if r.ok:
             body = r.content
             if body:
+                body = body[body.find('#EXTM3U'):body.find('#EXT-X-ENDLIST')]
                 ts_list = [urlparse.urljoin(m3u8_url, n.strip()) for n in body.split('\n') if n and not n.startswith("#")]
                 ts_list = zip(ts_list, [n for n in xrange(len(ts_list))])
                 if ts_list:
@@ -87,7 +91,7 @@ class Downloader:
             if file_name:
                 infile = open(os.path.join(self.dir, file_name), 'rb')
                 if not outfile:
-                    outfile = open(os.path.join(self.dir, file_name.split('.')[0]+'_all.'+file_name.split('.')[-1]), 'wb')
+                    outfile = open(os.path.join(self.dir, self.tmp_filename), 'wb')
                 outfile.write(infile.read())
                 infile.close()
                 os.remove(os.path.join(self.dir, file_name))
@@ -111,13 +115,14 @@ if __name__ == '__main__':
         print('格式：./m3u8.py [m3u8_url] [saved_dir] [saved_filename]')
         print('示例：./m3u8.py http://example.com/exp.m3u8 /home/video example.ts')
         sys.exit()
-    downloader = Downloader(10)
+    downloader = Downloader(50)
     print('下载 ' + m3u8_url)
     downloader.run(m3u8_url, saved_dir)
-    file_name = downloader.succed.get(0, '')
-    filepath = os.path.join(downloader.dir, file_name.split('.')[0] + '_all.'+file_name.split('.')[-1])
+
+    tmp_filepath = os.path.join(downloader.dir, downloader.tmp_filename)
     if saved_filename:
-        os.rename(filepath, os.path.join(downloader.dir, saved_filename))
-        print('已保存到 ' + os.path.join(downloader.dir, saved_filename))
+        saved_filepath = os.path.join(downloader.dir, saved_filename)
+        os.rename(tmp_filepath, saved_filepath)
+        print('\n已保存到 ' + saved_filepath + '\n')
     else:
-        print('已保存到 ' + filepath)
+        print('\n已保存到 ' + tmp_filepath + '\n')
