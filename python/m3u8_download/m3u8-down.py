@@ -26,11 +26,11 @@ class Downloader:
         self.retry = retry
         self.dir = ''
         self.tmp_dir = ''
+        self.tmp_filename = ''
         self.succed = {}
+        self.key_map = {}
         self.failed = []
         self.ts_total = 0
-        self.key_map = {}
-        self.tmp_filename = ''
         self.m3u8_obj = None
 
     def _get_http_session(self, pool_connections, pool_maxsize, max_retries):
@@ -53,26 +53,23 @@ class Downloader:
 
     def run(self, m3u8_url, dir=''):
         self.dir = dir
-        self.tmp_filename = ''.join(str(uuid.uuid4()).split('-'))
-        
-        m3u8_obj = m3u8.load(m3u8_url)
+        self.tmp_dir = os.path.join(self.dir, hashlib.md5(m3u8_url).hexdigest())
+        self.tmp_filename = ''.join(str(uuid.uuid4()).split('-')) + '.ts'
 
+        m3u8_obj = m3u8.load(m3u8_url)
         self.m3u8_obj = m3u8_obj
         if len(m3u8_obj.segments) > 0:
             if self.dir and not os.path.isdir(self.dir):
                 os.makedirs(self.dir)
             #创建临时的文件夹，用于存放片段
-            self.tmp_dir = os.path.join(self.dir, hashlib.md5(m3u8_url).hexdigest())
             if not os.path.isdir(self.tmp_dir):
                 os.makedirs(self.tmp_dir)
-            # self.record_filepath = os.path.join(self.tmp_dir, 'record.json')
             m3u8_obj = zip(m3u8_obj.segments, [n for n in xrange(len(m3u8_obj.segments))])
-
-            if m3u8_obj:
-                self.ts_total = len(m3u8_obj)
-                g1 = gevent.spawn(self._join_file)
-                self._download(m3u8_obj)
-                g1.join()
+            self.ts_total = len(m3u8_obj)
+            g1 = gevent.spawn(self._join_file)
+            self._download(m3u8_obj)
+            # 等待 greenlet 结束
+            g1.join()
         else:
             print('没有任何片段')
             sys.exit()
@@ -81,21 +78,27 @@ class Downloader:
     def _download(self, ts_list):
         self.pool.map(self._worker, ts_list)
         if self.failed:
+            if self.retry <= 0:
+                failed_urls = zip([ts[0].uri for ts in ts_list], [n for n in xrange(len(ts_list))])
+                print('❌多次尝试下载失败:' + str(failed_urls))
+                sys.exit()
+            self.retry -= 1
             ts_list = self.failed
             self.failed = []
             self._download(ts_list)
+            
     
     def _decrypt(self, infile, outfile, iv, key):
         cmd = 'openssl aes-128-cbc -d -in "{}" -out "{}" -nosalt -iv {} -K {}'.format(infile, outfile, iv, key)
         error = self._runcmd(cmd)[1]
-        if(len(error) > 0):
-            print('解密失败：' + error)
+        if(error):
+            print('❌解密失败：' + error)
             sys.exit()
 
     def _worker(self, ts_tuple):
         url = ts_tuple[0].uri
         index = ts_tuple[1]
-        retry = self.retry
+        retry = 2
 
         while retry:
             try:
@@ -118,12 +121,12 @@ class Downloader:
                     return
                 else:
                     retry -= 1
-                    print('not ok [FAIL]%s' % url)
+                    print('not ok [FAIL] %s' % url)
             except:
                 retry -= 1
-                print('exception [FAIL]%s' % url)
-        print('append failed url:' + url)
-        self.failed.append((url, index))
+                print('exception [FAIL] %s' % url)
+        # print('append failed:' + str(ts_tuple))
+        self.failed.append(ts_tuple)
 
     def _join_file(self):
         index = 0
@@ -140,7 +143,6 @@ class Downloader:
                 infile_path = os.path.join(self.tmp_dir, file_name)
 
                 seg = self.m3u8_obj.segments[index]
-
                 # 如果有key则说明片段加密了
                 is_enc = bool(seg.key)
                 if is_enc:
@@ -152,7 +154,7 @@ class Downloader:
                     key_uri = seg.key.uri
                     key_content = self.key_map.get(key_uri, '')
                     if not key_content:
-                        resp = requests.get(key_uri)
+                        resp = self.session.get(key_uri, timeout=15)
                         resp.encoding = 'utf-8'
                         key_content = resp.content.encode('hex')
                         self.key_map[key_uri] = key_content
@@ -188,16 +190,12 @@ if __name__ == '__main__':
         print('格式：./m3u8.py [m3u8_url] [saved_dir] [saved_filename]')
         print('示例：./m3u8.py http://example.com/exp.m3u8 /home/video example.ts')
         sys.exit()
-    downloader = Downloader(50)
+    downloader = Downloader(25)
     print('下载 ' + m3u8_url)
     downloader.run(m3u8_url, saved_dir)
 
-    tmp_filepath = os.path.join(downloader.tmp_dir, downloader.tmp_filename)
-    target_filepath = ''
-    if saved_filename.strip():
-        target_filepath = os.path.join(downloader.dir, saved_filename)
-    else:
-        target_filepath = os.path.join(downloader.dir, downloader.tmp_filename + '.ts')
+    tmp_filepath = os.path.join(downloader.tmp_dir, downloader.tmp_filename)    
+    target_filepath = os.path.join(downloader.dir, saved_filename if saved_filename.strip() else downloader.tmp_filename)
     shutil.move(tmp_filepath, target_filepath)
     print('\n已保存到 ' + target_filepath + '\n')
 
