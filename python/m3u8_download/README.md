@@ -1,7 +1,15 @@
-# m3u8-Downloader
-Download m3u8 to ts with multithreading
+# m3u8下载器
+### 支持：
+- 兼容python2和python3
+- 并发下载m3u8片段
+- 解密m3u8片段
+- 自动转换成mp4格式(需要安装`ffmpeg`)
 
-# How to use
+# 如何使用
 ```bash
-./m3u8.py http://example.com/exp.m3u8 /home/video example.ts
+./m3u8.py
+```
+或
+```bash
+./m3u8.py http://example.com/exp.m3u8 /home/video/exp.mp4
 ```
