@@ -1,37 +1,45 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python
 #coding: utf-8
 
-from gevent import monkey
-monkey.patch_all()
-
-from gevent.pool import Pool
-import gevent
-import requests
-import os
-import shutil
-import sys
-import time
-import math
-import uuid
-import hashlib
-import json
 import m3u8
+import grequests
+import requests
+from requests.adapters import HTTPAdapter
+import sys
+from sys import version_info
+if version_info.major == 3:
+    pass
+elif version_info.major == 2:
+    try:
+        input = raw_input
+    except NameError:
+        pass
+else:
+    print ("Unknown python version - input function not safe")
+
+import os
+import math
 import shlex
 import subprocess
+import tempfile
+import shutil
+import time
 
 class Downloader:
     def __init__(self, pool_size, retry=3):
-        self.pool = Pool(pool_size)
+        self.pool_size = pool_size
         self.session = self._get_http_session(pool_size, pool_size, retry)
         self.retry = retry
-        self.dir = ''
-        self.tmp_dir = ''
-        self.tmp_filename = ''
-        self.succed = {}
-        self.key_map = {}
-        self.failed = []
-        self.ts_total = 0
+        self.retry_count = 0
         self.m3u8_obj = None
+        self.tsurl_list = []
+        self.ts_total = 0
+        self.dest_filepath = ""
+        self.tmp_dir = ""
+        self.tmp_filepath = ""
+        self.key_map = {}
+        self.succed = {}
+        self.failed = []
 
     def _get_http_session(self, pool_connections, pool_maxsize, max_retries):
             session = requests.Session()
@@ -43,162 +51,184 @@ class Downloader:
     def _runcmd(self, cmd):
         #将命令字符串转换为数组
         args = shlex.split(cmd)
-        # print(args)
         #执行命令，获得输出，错误
-        output,error = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE).communicate()
-        output = output.decode('utf-8')
-        error = error.decode('utf-8')
-        # print(error)
-        return output,error
+        p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        output,error = p.communicate()
+        exit_code = p.returncode
+        # 为了兼容 python2 和 python3
+        if 'bytes' in str(type(output)):
+            output = output.decode('utf-8')
+            error = error.decode('utf-8')
+        return output, error, exit_code
 
-    def run(self, m3u8_url, dir=''):
-        self.dir = dir
-        self.tmp_dir = os.path.join(self.dir, hashlib.md5(m3u8_url).hexdigest())
-        self.tmp_filename = ''.join(str(uuid.uuid4()).split('-')) + '.ts'
+    def _make_path_unique(self, path, isfile=True):
+        unique_path = path
+        num = 1
+        while os.path.exists(unique_path):
+            if isfile:
+                parts = os.path.splitext(path)
+                unique_path = '{} ({}){}'.format(parts[0], num, parts[1])
+            else:
+                unique_path = '{} ({})'.format(path, num)
+            num += 1
+        return unique_path
 
+    def run(self, m3u8_url="", dest_filepath=""):
+        if not m3u8_url:
+            print('m3u8_url不能为空')
+            sys.exit()
+        if not dest_filepath:
+            print('dest_filepath不能为空')
+            sys.exit()
         m3u8_obj = m3u8.load(m3u8_url)
+        self.ts_total = len(m3u8_obj.segments)
         self.m3u8_obj = m3u8_obj
-        if len(m3u8_obj.segments) > 0:
-            if self.dir and not os.path.isdir(self.dir):
-                os.makedirs(self.dir)
-            #创建临时的文件夹，用于存放片段
-            if not os.path.isdir(self.tmp_dir):
-                os.makedirs(self.tmp_dir)
-            m3u8_obj = zip(m3u8_obj.segments, [n for n in xrange(len(m3u8_obj.segments))])
-            self.ts_total = len(m3u8_obj)
-            g1 = gevent.spawn(self._join_file)
-            self._download(m3u8_obj)
-            # 等待 greenlet 结束
-            g1.join()
-        else:
+        if self.ts_total == 0:
             print('没有任何片段')
             sys.exit()
+        if not os.path.isdir(os.path.dirname(dest_filepath)):
+            os.makedirs(os.path.dirname(dest_filepath))
+        self.dest_filepath = dest_filepath if os.path.basename(dest_filepath) else os.path.join(os.path.dirname(dest_filepath), os.path.basename(m3u8_url))    
+        self.tmp_dir = tempfile.mkdtemp(dir=os.path.dirname(self.dest_filepath))
+        self.tsurl_list = [seg.uri for seg in self.m3u8_obj.segments]
+        self._download(self.tsurl_list)
+        self._merge_file()
+        self._convertFormat()
+        print('已保存到 {}\n'.format(self.dest_filepath))
 
+    def _download(self, tsurl_list):
+        # 如果有加密，先下载首个片段的key
+        seg = self.m3u8_obj.segments[0]
+        if seg.key.uri:
+            self._get_key_content(seg)
 
-    def _download(self, ts_list):
-        self.pool.map(self._worker, ts_list)
+        reqs = (grequests.get(url, timeout=5) for url in tsurl_list)
+        for response in grequests.imap(reqs, size=self.pool_size, exception_handler=self.exception_handler):
+            self.response_handler(response)
+
         if self.failed:
-            if self.retry <= 0:
-                failed_urls = zip([ts[0].uri for ts in ts_list], [n for n in xrange(len(ts_list))])
-                print('❌多次尝试下载失败:' + str(failed_urls))
-                sys.exit()
-            self.retry -= 1
-            ts_list = self.failed
+            if self.retry_count >= self.retry:
+                print('\n经过{}次尝试，还有{}个片段下载失败'.format(self.retry_count, len(self.failed)))
+                return
+            self.retry_count += 1
+            print('\n有{}个片段下载失败，3秒后尝试第{}次重新下载..'.format(len(self.failed), self.retry_count))
+            tsurl_list = self.failed
             self.failed = []
-            self._download(ts_list)
-            
-    
+            time.sleep(3)
+            self._download(tsurl_list)
+        print('')
+
+    def exception_handler(self, request, exception):
+        print("\nRequest failed: " + request.url + str(exception))
+        self.failed.append(request.url)
+
+    def response_handler(self, r, *args, **kwargs):
+        url = r.url
+        index = self.tsurl_list.index(url)
+        if r.ok:
+            seg = self.m3u8_obj.segments[index]
+            file_path = os.path.join(self.tmp_dir, os.path.basename(url))
+            with open(file_path, 'wb') as f:
+                f.write(r.content)
+            is_enc = bool(seg.key.uri)
+            if is_enc:
+                iv = ''
+                if seg.key.iv:
+                    iv = '{:032x}'.format(int(str(seg.key.iv), 16))
+                else:
+                    iv = '{:032x}'.format(int(str(index), 16))
+                key_content = self._get_key_content(seg)
+                self._decrypt(file_path, file_path + '.dec', iv, key_content)
+                os.remove(file_path)
+                file_path = file_path + '.dec'
+            self.succed[index] = file_path
+            # 更新进度条
+            progress = int(math.floor(len(self.succed) / float(self.ts_total) * 100))
+            progress_step = 2.5
+            total_step = int(math.ceil(100.0 / progress_step))
+            current_step = int(total_step * (progress/100.0))
+            s = "\r已下载 %d%% |%s%s| [%d/%d]"%(progress,"█"*current_step, " "*(total_step - current_step), len(self.succed), self.ts_total)   #\r表示回车但是不换行，利用这个原理进行百分比的刷新
+            sys.stdout.write(s)       #向标准输出终端写内容
+            sys.stdout.flush()        #立即将缓存的内容刷新到标准输出
+        else:
+            print("\nnot ok: " + url)
+            self.failed.append(url)
+        
+    def _get_key_content(self, seg):
+        key_uri = seg.key.uri
+        key_content = self.key_map.get(key_uri, '')
+        if not key_content:
+            resp = self.session.get(key_uri, timeout=5)
+            key_content = resp.content.hex() if 'bytes' in str(type(resp.content)) else resp.content.encode('hex')
+            self.key_map[key_uri] = key_content
+        return key_content
+
     def _decrypt(self, infile, outfile, iv, key):
         cmd = 'openssl aes-128-cbc -d -in "{}" -out "{}" -nosalt -iv {} -K {}'.format(infile, outfile, iv, key)
-        error = self._runcmd(cmd)[1]
-        if(error):
+        _,error,exit_code = self._runcmd(cmd)
+        if  exit_code:
             print('❌解密失败：' + error)
             sys.exit()
-
-    def _worker(self, ts_tuple):
-        url = ts_tuple[0].uri
-        index = ts_tuple[1]
-        retry = 2
-
-        while retry:
-            try:
-                # print('下载：' + url)
-                r = self.session.get(url, timeout=20)
-                if r.ok:
-                    file_name = url.split('/')[-1].split('?')[0]
-                    with open(os.path.join(self.tmp_dir, file_name), 'wb') as f:
-                        f.write(r.content)
-                    self.succed[index] = file_name
-                    progress = int(math.floor(len(self.succed) / float(self.ts_total) * 100))
-                    progress_step = 2.5
-                    total_step = int(math.ceil(100.0 / progress_step))
-                    current_step = int(total_step * (progress/100.0))
-                    s = "\r已下载 %d%% |%s%s| %d/%d"%(progress,"█"*current_step, " "*(total_step - current_step), len(self.succed), self.ts_total)   #\r表示回车但是不换行，利用这个原理进行百分比的刷新
-                    sys.stdout.write(s)       #向标准输出终端写内容
-                    sys.stdout.flush()        #立即将缓存的内容刷新到标准输出
-                    if(len(self.succed) == self.ts_total):
-                        print('')
-                    return
-                else:
-                    retry -= 1
-                    print('not ok [FAIL] %s' % url)
-            except:
-                retry -= 1
-                print('exception [FAIL] %s' % url)
-        # print('append failed:' + str(ts_tuple))
-        self.failed.append(ts_tuple)
-
-    def _join_file(self):
+            
+    def _merge_file(self):
         index = 0
-        outfile = ''
+        outfile = None
+        file_num = 0
         while index < self.ts_total:
-            # print('join:' + str(index))
-            if len(self.succed) == self.ts_total:
-                s = "\r视频合并中 [{}/{}]".format(str(index + 1), str(self.ts_total))   #\r表示回车但是不换行，利用这个原理进行百分比的刷新
-                sys.stdout.write(s)       #向标准输出终端写内容
-                sys.stdout.flush()        #立即将缓存的内容刷新到标准输出
-            file_name = self.succed.get(index, '')
-            # print "keys : %s" %  self.succed.keys()
-            if file_name:
-                infile_path = os.path.join(self.tmp_dir, file_name)
-
-                seg = self.m3u8_obj.segments[index]
-                # 如果有key则说明片段加密了
-                is_enc = bool(seg.key)
-                if is_enc:
-                    if seg.key.iv:
-                        iv = '{:032x}'.format(int(str(seg.key.iv), 16))
-                    else:
-                        iv = '{:032x}'.format(int(str(index), 16))
-                    
-                    key_uri = seg.key.uri
-                    key_content = self.key_map.get(key_uri, '')
-                    if not key_content:
-                        resp = self.session.get(key_uri, timeout=15)
-                        resp.encoding = 'utf-8'
-                        key_content = resp.content.encode('hex')
-                        self.key_map[key_uri] = key_content
-                    self._decrypt(infile_path, infile_path + '.dec', iv, key_content)
-                    infile_path = infile_path + '.dec'
+            infile_path = self.succed.get(index, '')
+            if infile_path:
                 if not outfile:
-                    outfile = open(os.path.join(self.tmp_dir, self.tmp_filename), 'wb')
+                    self.tmp_filepath = self._make_path_unique(self.dest_filepath + '.tmp')
+                    outfile = open(self.tmp_filepath, 'wb')
                 infile = open(infile_path, 'rb')
                 outfile.write(infile.read())
                 infile.close()
-                os.remove(os.path.join(self.tmp_dir, file_name))
-                if is_enc:
-                    os.remove(infile_path)
-                index += 1
-            else:
-                time.sleep(1)
+                os.remove(infile_path)
+
+                file_num += 1
+                s = "\r视频合并中 [{}/{}]".format(file_num, len(self.succed))
+                sys.stdout.write(s)       
+                sys.stdout.flush()
+            index += 1
         if outfile:
             outfile.close()
+        self.dest_filepath = self._make_path_unique(self.dest_filepath)
+        os.rename(self.tmp_filepath, self.dest_filepath)
+        shutil.rmtree(self.tmp_dir)
+    
+    def _convertFormat(self):
+        _,_,exit_code = self._runcmd('ffmpeg -version')
+        # 退出码不为0 表示"ffmpeg -version"命令执行失败，判断为没有安装ffmpeg
+        if exit_code:
+            return False
+        output_filepath = self._make_path_unique(os.path.splitext(self.dest_filepath)[0] + '.mp4')
+        print('\n正在转换成mp4格式...')
+        _,error,exit_code = self._runcmd('ffmpeg -i "{}" -c copy "{}"'.format(self.dest_filepath, output_filepath))
+        if not exit_code:
+            os.remove(self.dest_filepath)
+            if self.dest_filepath.endswith('.mp4'):
+                os.rename(output_filepath, self.dest_filepath)
+                output_filepath = self.dest_filepath
+            self.dest_filepath = output_filepath
+            return True
+        else:
+            print('❌转换失败:\n{}'.format(error))
+            return False
 
 if __name__ == '__main__':
 
-    m3u8_url = sys.argv[1] if len(sys.argv) > 1 else raw_input("请输入m3u8 url：")
-    saved_dir = sys.argv[2] if len(sys.argv) > 2 else raw_input("请输入保存的目录： ")
-    saved_filename = sys.argv[3] if len(sys.argv) > 3 else ('' if len(sys.argv) > 2 else raw_input("请输入保存的文件名[可选]："))
-
+    m3u8_url = sys.argv[1] if len(sys.argv) > 1 else input("请输入m3u8 url：")
+    dest_filepath = sys.argv[2] if len(sys.argv) > 2 else input("请输入保存的路径(如: /home/video/exp.mp4)： ")
+    
     if not m3u8_url.strip():
         print('❌m3u8_url不能为空')
-        print('格式：./m3u8.py [m3u8_url] [saved_dir] [saved_filename]')
-        print('示例：./m3u8.py http://example.com/exp.m3u8 /home/video example.ts')
+        print('格式：./m3u8-down.py [m3u8_url] [dest_filepath]')
+        print('示例：./m3u8-down.py http://example.com/exp.m3u8 /home/video/exp.mp4')
         sys.exit()
-    if not saved_dir.strip():
-        print('❌saved_dir不能为空')
-        print('格式：./m3u8.py [m3u8_url] [saved_dir] [saved_filename]')
-        print('示例：./m3u8.py http://example.com/exp.m3u8 /home/video example.ts')
+    if not dest_filepath.strip():
+        print('❌dest_filepath不能为空')
+        print('格式：./m3u8-down.py [m3u8_url] [dest_filepath]')
+        print('示例：./m3u8-down.py http://example.com/exp.m3u8 /home/video/exp.mp4')
         sys.exit()
-    downloader = Downloader(25)
-    print('下载 ' + m3u8_url)
-    downloader.run(m3u8_url, saved_dir)
-
-    tmp_filepath = os.path.join(downloader.tmp_dir, downloader.tmp_filename)    
-    target_filepath = os.path.join(downloader.dir, saved_filename if saved_filename.strip() else downloader.tmp_filename)
-    shutil.move(tmp_filepath, target_filepath)
-    print('\n已保存到 ' + target_filepath + '\n')
-
-    # 删除临时目录
-    shutil.rmtree(downloader.tmp_dir)
-
+    downloader = Downloader(10)
+    downloader.run(m3u8_url, dest_filepath)
