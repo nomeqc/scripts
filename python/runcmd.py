@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 # -*- coding: UTF-8 -*-
 
 import web
@@ -8,6 +8,11 @@ import json
 
 '''
 使用方式：
+
+# 默认端口8080
+python3 ./runcmd.py
+
+# 或指定 ip:端口
 python3 ./runcmd.py 127.0.0.1:7777
 
 '''
@@ -31,19 +36,23 @@ class runcmd:
         #将命令字符串转换为数组
         args = shlex.split(cmd)
         print(args)
-        #执行命令，获得输出，错误
-        output,error = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE).communicate()
-        output = output.decode('utf-8')
-        error = error.decode('utf-8')
-        result_json = {}
-        if len(error) > 0:
-        	result_json['errcode'] = 10086
-        	result_json['message'] = error
-        else:
-        	result_json['errcode'] = 0
-        	result_json['message'] = output
+        output = ''
+        error = ''
+        returncode = 0
+        try:
+            process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            output, error = process.communicate()
+            returncode = process.returncode
+        except Exception as exp:
+            output = ''
+            error = str(exp)
+            returncode = 404
+        if 'bytes' in str(type(output)):
+            output = output.decode('utf-8')
+            error = error.decode('utf-8')
+        result = {'output': output, 'error': error, 'returncode': returncode}
         web.header('Content-Type', 'application/json; charset=utf-8', unique=True)
-        return json.dumps(result_json, ensure_ascii=False)
+        return json.dumps(result, ensure_ascii=False)
 
 app = web.application(urls, locals())
 
