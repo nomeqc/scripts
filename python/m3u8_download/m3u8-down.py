@@ -5,6 +5,7 @@ import m3u8
 import grequests
 import requests
 from requests.adapters import HTTPAdapter
+
 import sys
 from sys import version_info
 if version_info.major == 3:
@@ -80,7 +81,12 @@ class Downloader:
         if not dest_filepath:
             print('dest_filepath不能为空')
             sys.exit()
-        m3u8_obj = m3u8.load(m3u8_url)
+        m3u8_obj = m3u8.load(m3u8_url, verify_ssl=False)
+        base_uri = os.path.dirname(m3u8_url)
+        for seg in m3u8_obj.segments:
+            if not seg.uri.startswith('http://') and not seg.uri.startswith('https://'):
+                seg.uri = os.path.join(base_uri, seg.uri)
+
         self.ts_total = len(m3u8_obj.segments)
         self.m3u8_obj = m3u8_obj
         if self.ts_total == 0:
@@ -99,7 +105,7 @@ class Downloader:
     def _download(self, tsurl_list):
         # 如果有加密，先下载首个片段的key
         seg = self.m3u8_obj.segments[0]
-        if seg.key.uri:
+        if hasattr(seg.key, 'uri') and seg.key.uri:
             self._get_key_content(seg)
 
         reqs = (grequests.get(url, timeout=5) for url in tsurl_list)
@@ -119,7 +125,7 @@ class Downloader:
         print('')
 
     def exception_handler(self, request, exception):
-        print("\nRequest failed: " + request.url + str(exception))
+        print('\nRequest failed: {}  {}'.format(request.url, str(exception)))
         self.failed.append(request.url)
 
     def response_handler(self, r, *args, **kwargs):
@@ -130,7 +136,7 @@ class Downloader:
             file_path = os.path.join(self.tmp_dir, os.path.basename(url))
             with open(file_path, 'wb') as f:
                 f.write(r.content)
-            is_enc = bool(seg.key.uri)
+            is_enc = hasattr(seg.key, 'uri') and seg.key.uri
             if is_enc:
                 iv = ''
                 if seg.key.iv:
@@ -218,8 +224,7 @@ class Downloader:
 if __name__ == '__main__':
 
     m3u8_url = sys.argv[1] if len(sys.argv) > 1 else input("请输入m3u8 url：")
-    dest_filepath = sys.argv[2] if len(sys.argv) > 2 else input("请输入保存的路径(如: /home/video/exp.mp4)： ")
-    
+    dest_filepath = sys.argv[2] if len(sys.argv) > 2 else input("请输入保存的路径(如: /home/video/exp.mp4)： ")    
     if not m3u8_url.strip():
         print('❌m3u8_url不能为空')
         print('格式：./m3u8-down.py [m3u8_url] [dest_filepath]')
@@ -230,5 +235,9 @@ if __name__ == '__main__':
         print('格式：./m3u8-down.py [m3u8_url] [dest_filepath]')
         print('示例：./m3u8-down.py http://example.com/exp.m3u8 /home/video/exp.mp4')
         sys.exit()
-    downloader = Downloader(10)
+    if hasattr(m3u8_url, 'decode'):
+        m3u8_url = m3u8_url.decode('utf-8')
+        dest_filepath = dest_filepath.decode('utf-8')
+    downloader = Downloader(20)
+    print('下载 ' + m3u8_url)
     downloader.run(m3u8_url, dest_filepath)
