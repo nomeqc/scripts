@@ -5,6 +5,7 @@ import web
 import shlex
 import subprocess
 import json
+import chardet
 
 '''
 使用方式：
@@ -48,8 +49,10 @@ class runcmd:
             error = str(exp)
             returncode = 404
         if 'bytes' in str(type(output)):
-            output = output.decode('utf-8')
-            error = error.decode('utf-8')
+            encoding = chardet.detect(output)['encoding']
+            # print('encoding: ' + encoding)
+            output = output.decode(encoding)
+            error = error.decode(encoding)
         result = {'output': output, 'error': error, 'returncode': returncode}
         web.header('Content-Type', 'application/json; charset=utf-8', unique=True)
         return json.dumps(result, ensure_ascii=False)
