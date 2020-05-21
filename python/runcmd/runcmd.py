@@ -57,8 +57,7 @@ class runcmd:
         web.header('Content-Type', 'application/json; charset=utf-8', unique=True)
         return json.dumps(result, ensure_ascii=False)
 
-app = web.application(urls, locals())
-
 if __name__ == "__main__":
+    app = web.application(urls, locals())
     app.run()
     
