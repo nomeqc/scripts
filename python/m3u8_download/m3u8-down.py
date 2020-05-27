@@ -1,16 +1,20 @@
-#!/usr/bin/env python
+#!/usr/bin/env python2
 #coding: utf-8
 
 import m3u8
 import grequests
 import requests
 from requests.adapters import HTTPAdapter
+import platform
+import chardet
 
 import sys
 from sys import version_info
 if version_info.major == 3:
     pass
 elif version_info.major == 2:
+    reload(sys)
+    sys.setdefaultencoding('UTF8')
     try:
         input = raw_input
     except NameError:
@@ -50,16 +54,27 @@ class Downloader:
             return session
 
     def _runcmd(self, cmd):
-        #将命令字符串转换为数组
-        args = shlex.split(cmd)
-        #执行命令，获得输出，错误
-        p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        output,error = p.communicate()
-        exit_code = p.returncode
-        # 为了兼容 python2 和 python3
-        if 'bytes' in str(type(output)):
-            output = output.decode('utf-8')
-            error = error.decode('utf-8')
+        if platform.system().lower() == 'windows':
+            # print('cmd: {}'.format(cmd))
+            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
+        else:
+            # 将命令字符串转换为数组
+            args = shlex.split(cmd)
+            # print('args: {}'.format(args))
+            process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False)
+        
+        output,error = process.communicate()
+        exit_code = process.returncode
+
+        # 防止乱码
+        encoding = chardet.detect(output)['encoding']
+        encoding = encoding if encoding else 'utf-8'
+        output = output.decode(encoding)
+
+        encoding = chardet.detect(error)['encoding']
+        encoding = encoding if encoding else 'utf-8'
+        error = error.decode(encoding)
+
         return output, error, exit_code
 
     def _make_path_unique(self, path, isfile=True):
@@ -224,7 +239,8 @@ class Downloader:
 if __name__ == '__main__':
 
     m3u8_url = sys.argv[1] if len(sys.argv) > 1 else input("请输入m3u8 url：")
-    dest_filepath = sys.argv[2] if len(sys.argv) > 2 else input("请输入保存的路径(如: /home/video/exp.mp4)： ")    
+    dest_filepath = sys.argv[2] if len(sys.argv) > 2 else input("请输入保存的路径(如: /home/video/exp.mp4)： ")
+    
     if not m3u8_url.strip():
         print('❌m3u8_url不能为空')
         print('格式：./m3u8-down.py [m3u8_url] [dest_filepath]')
@@ -235,9 +251,9 @@ if __name__ == '__main__':
         print('格式：./m3u8-down.py [m3u8_url] [dest_filepath]')
         print('示例：./m3u8-down.py http://example.com/exp.m3u8 /home/video/exp.mp4')
         sys.exit()
-    if hasattr(m3u8_url, 'decode'):
-        m3u8_url = m3u8_url.decode('utf-8')
-        dest_filepath = dest_filepath.decode('utf-8')
+    
     downloader = Downloader(20)
     print('下载 ' + m3u8_url)
     downloader.run(m3u8_url, dest_filepath)
+
+    
