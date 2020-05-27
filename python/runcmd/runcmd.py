@@ -5,6 +5,7 @@ import web
 import shlex
 import subprocess
 import json
+import platform
 import chardet
 
 '''
@@ -32,18 +33,20 @@ class default:
 class runcmd:
     def POST(self):
         i = web.input()
-        #获得参数cmd
+        # 获得参数cmd
         cmd = i.cmd
-        
-        #将命令字符串转换为数组
-        args = shlex.split(cmd)
-        # args = ['type', 'F:\\Developer\\Python\\Test\\web_py\\runcmd.py']
-        print(args)
         output = ''
         error = ''
         returncode = 0
         try:
-            process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
+            if platform.system().lower() == 'windows':
+                print('cmd: {}'.format(cmd))
+                process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
+            else:
+                # 将命令字符串转换为数组
+                args = shlex.split(cmd)
+                print('args: {}'.format(args))
+                process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False)
             output, error = process.communicate()
             returncode = process.returncode
         except Exception as exp:
