@@ -4,9 +4,9 @@
 import m3u8
 import grequests
 import requests
-from requests.adapters import HTTPAdapter
 import platform
 import chardet
+import re
 
 import sys
 from sys import version_info
@@ -29,6 +29,7 @@ import subprocess
 import tempfile
 import shutil
 import time
+import hashlib
 
 class Downloader:
     def __init__(self, pool_size, retry=3):
@@ -47,11 +48,11 @@ class Downloader:
         self.failed = []
 
     def _get_http_session(self, pool_connections, pool_maxsize, max_retries):
-            session = requests.Session()
-            adapter = requests.adapters.HTTPAdapter(pool_connections=pool_connections, pool_maxsize=pool_maxsize, max_retries=max_retries)
-            session.mount('http://', adapter)
-            session.mount('https://', adapter)
-            return session
+        session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(pool_connections=pool_connections, pool_maxsize=pool_maxsize, max_retries=max_retries)
+        session.mount('http://', adapter)
+        session.mount('https://', adapter)
+        return session
 
     def _runcmd(self, cmd):
         if platform.system().lower() == 'windows':
@@ -63,8 +64,8 @@ class Downloader:
             # print('args: {}'.format(args))
             process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False)
         
-        output,error = process.communicate()
-        exit_code = process.returncode
+        output, error = process.communicate()
+        returncode = process.returncode
 
         # 防止乱码
         encoding = chardet.detect(output)['encoding']
@@ -75,7 +76,7 @@ class Downloader:
         encoding = encoding if encoding else 'utf-8'
         error = error.decode(encoding)
 
-        return output, error, exit_code
+        return output, error, returncode
 
     def _make_path_unique(self, path, isfile=True):
         unique_path = path
@@ -96,11 +97,17 @@ class Downloader:
         if not dest_filepath:
             print('dest_filepath不能为空')
             sys.exit()
-        m3u8_obj = m3u8.load(m3u8_url, verify_ssl=False)
+        if m3u8_url.startswith('http://') or m3u8_url.startswith('https://'):
+            m3u8_content = self._get_m3u8_content(m3u8_url)
+            m3u8_obj = m3u8.loads(m3u8_content)
+        else:
+            m3u8_obj = m3u8.load(m3u8_url)
+        
+        # 有的m3u8文件里的片段url是相对路径，补全为绝对路径
         base_uri = os.path.dirname(m3u8_url)
         for seg in m3u8_obj.segments:
             if not seg.uri.startswith('http://') and not seg.uri.startswith('https://'):
-                seg.uri = os.path.join(base_uri, seg.uri)
+                seg.uri = '/'.join(os.path.join(base_uri, seg.uri).split('\\'))
 
         self.ts_total = len(m3u8_obj.segments)
         self.m3u8_obj = m3u8_obj
@@ -112,15 +119,30 @@ class Downloader:
         self.dest_filepath = dest_filepath if os.path.basename(dest_filepath) else os.path.join(os.path.dirname(dest_filepath), os.path.basename(m3u8_url))    
         self.tmp_dir = tempfile.mkdtemp(dir=os.path.dirname(self.dest_filepath))
         self.tsurl_list = [seg.uri for seg in self.m3u8_obj.segments]
+
         self._download(self.tsurl_list)
         self._merge_file()
         self._convertFormat()
         print('已保存到 {}\n'.format(self.dest_filepath))
 
+    def _get_m3u8_content(self, m3u8_url):
+        result = re.search(r'(https?://[^/\n\s]+)', m3u8_url)
+        ref = result.group(1) if result else ''
+        # 请求头User-Agent设置成移动端， Referer设置成和m3u8_url域名一样以绕过一般的网站限制
+        headers = {
+            'User-Agent': 'AppleCoreMedia/1.0.0.17D50 (iPhone; U; CPU OS 13_3_1 like Mac OS X; en_us)',
+            'Referer': ref
+        }
+        response = requests.get(url=m3u8_url, headers=headers, verify=False)
+        return response.text
+
     def _download(self, tsurl_list):
         # 如果有加密，先下载首个片段的key
         seg = self.m3u8_obj.segments[0]
         if hasattr(seg.key, 'uri') and seg.key.uri:
+            if self._runcmd('openssl version')[-1] > 0:
+                print('m3u8片段已加密，需要安装openssl以支持解密')
+                sys.exit()
             self._get_key_content(seg)
 
         reqs = (grequests.get(url, timeout=5) for url in tsurl_list)
@@ -140,20 +162,23 @@ class Downloader:
         print('')
 
     def exception_handler(self, request, exception):
-        print('\nRequest failed: {}  {}'.format(request.url, str(exception)))
+        print('\n请求失败: {}  {}'.format(request.url, str(exception)))
         self.failed.append(request.url)
 
     def response_handler(self, r, *args, **kwargs):
-        url = r.url
+        # 处理重定向导致url变化的情况
+        url = r.history[0].url if r.history else r.url
         index = self.tsurl_list.index(url)
         if r.ok:
             seg = self.m3u8_obj.segments[index]
-            file_path = os.path.join(self.tmp_dir, os.path.basename(url))
+            m = hashlib.md5()
+            m.update(url if sys.version_info.major == 2 else url.encode('utf-8'))
+            url_md5 = m.hexdigest()
+            file_path = os.path.join(self.tmp_dir, url_md5)
             with open(file_path, 'wb') as f:
                 f.write(r.content)
             is_enc = hasattr(seg.key, 'uri') and seg.key.uri
             if is_enc:
-                iv = ''
                 if seg.key.iv:
                     iv = '{:032x}'.format(int(str(seg.key.iv), 16))
                 else:
@@ -167,14 +192,14 @@ class Downloader:
             progress = int(math.floor(len(self.succed) / float(self.ts_total) * 100))
             progress_step = 2.5
             total_step = int(math.ceil(100.0 / progress_step))
-            current_step = int(total_step * (progress/100.0))
-            s = "\r已下载 %d%% |%s%s| [%d/%d]"%(progress,"█"*current_step, " "*(total_step - current_step), len(self.succed), self.ts_total)   #\r表示回车但是不换行，利用这个原理进行百分比的刷新
-            sys.stdout.write(s)       #向标准输出终端写内容
-            sys.stdout.flush()        #立即将缓存的内容刷新到标准输出
+            current_step = int(total_step * (progress / 100.0))
+            s = "\r已下载 %d%% |%s%s| [%d/%d]" % (progress, "█" * current_step, " " * (total_step - current_step), len(self.succed), self.ts_total)   #\r表示回车但是不换行，利用这个原理进行百分比的刷新
+            sys.stdout.write(s)       # 向标准输出终端写内容
+            sys.stdout.flush()        # 立即将缓存的内容刷新到标准输出
         else:
-            print("\nnot ok: " + url)
+            print("\n下载失败: " + url)
             self.failed.append(url)
-        
+
     def _get_key_content(self, seg):
         key_uri = seg.key.uri
         key_content = self.key_map.get(key_uri, '')
@@ -186,11 +211,11 @@ class Downloader:
 
     def _decrypt(self, infile, outfile, iv, key):
         cmd = 'openssl aes-128-cbc -d -in "{}" -out "{}" -nosalt -iv {} -K {}'.format(infile, outfile, iv, key)
-        _,error,exit_code = self._runcmd(cmd)
-        if  exit_code:
+        _, error, returncode = self._runcmd(cmd)
+        if returncode != 0:
             print('❌解密失败：' + error)
             sys.exit()
-            
+
     def _merge_file(self):
         index = 0
         outfile = None
@@ -218,14 +243,13 @@ class Downloader:
         shutil.rmtree(self.tmp_dir)
     
     def _convertFormat(self):
-        _,_,exit_code = self._runcmd('ffmpeg -version')
         # 退出码不为0 表示"ffmpeg -version"命令执行失败，判断为没有安装ffmpeg
-        if exit_code:
+        if self._runcmd('ffmpeg -version')[-1] != 0:
             return False
         output_filepath = self._make_path_unique(os.path.splitext(self.dest_filepath)[0] + '.mp4')
         print('\n正在转换成mp4格式...')
-        _,error,exit_code = self._runcmd('ffmpeg -i "{}" -c copy "{}"'.format(self.dest_filepath, output_filepath))
-        if not exit_code:
+        _, error, returncode = self._runcmd('ffmpeg -i "{}" -c copy "{}"'.format(self.dest_filepath, output_filepath))
+        if returncode == 0:
             os.remove(self.dest_filepath)
             if self.dest_filepath.endswith('.mp4'):
                 os.rename(output_filepath, self.dest_filepath)
@@ -235,6 +259,7 @@ class Downloader:
         else:
             print('❌转换失败:\n{}'.format(error))
             return False
+
 
 if __name__ == '__main__':
 
