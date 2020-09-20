@@ -7,6 +7,8 @@ import requests
 import platform
 import chardet
 import re
+import imghdr
+import binascii
 
 import sys
 from sys import version_info
@@ -56,12 +58,10 @@ class Downloader:
 
     def _runcmd(self, cmd):
         if platform.system().lower() == 'windows':
-            # print('cmd: {}'.format(cmd))
             process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
         else:
             # 将命令字符串转换为数组
             args = shlex.split(cmd)
-            # print('args: {}'.format(args))
             process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False)
         
         output, error = process.communicate()
@@ -117,12 +117,15 @@ class Downloader:
         if not os.path.isdir(os.path.dirname(dest_filepath)):
             os.makedirs(os.path.dirname(dest_filepath))
         self.dest_filepath = dest_filepath if os.path.basename(dest_filepath) else os.path.join(os.path.dirname(dest_filepath), os.path.basename(m3u8_url))    
+        self.dest_filepath = os.path.realpath(self.dest_filepath)
+
         self.tmp_dir = tempfile.mkdtemp(dir=os.path.dirname(self.dest_filepath))
         self.tsurl_list = [seg.uri for seg in self.m3u8_obj.segments]
 
         self._download(self.tsurl_list)
         self._merge_file()
         self._convertFormat()
+
         print('已保存到 {}\n'.format(self.dest_filepath))
 
     def _get_m3u8_content(self, m3u8_url):
@@ -187,7 +190,11 @@ class Downloader:
                 self._decrypt(file_path, file_path + '.dec', iv, key_content)
                 os.remove(file_path)
                 file_path = file_path + '.dec'
+            
+            self._discard_fake(file_path)
+
             self.succed[index] = file_path
+
             # 更新进度条
             progress = int(math.floor(len(self.succed) / float(self.ts_total) * 100))
             progress_step = 2.5
@@ -233,7 +240,7 @@ class Downloader:
 
                 file_num += 1
                 s = "\r视频合并中 [{}/{}]".format(file_num, len(self.succed))
-                sys.stdout.write(s)       
+                sys.stdout.write(s)
                 sys.stdout.flush()
             index += 1
         if outfile:
@@ -242,13 +249,34 @@ class Downloader:
         os.rename(self.tmp_filepath, self.dest_filepath)
         shutil.rmtree(self.tmp_dir)
     
+    '''
+     如果ts文件伪装成图片，将图片数据去除掉
+    '''
+    def _discard_fake(self, ts_path):
+        fmt = imghdr.what(ts_path)
+        seps = {
+            'png': b'0000000049454E44AE426082',
+            'jpeg': b'FFD9'
+        }
+        sep = seps.get(fmt)
+        if sep:
+            with open(ts_path, 'rb') as f:
+                data = f.read()
+                hexstr = binascii.b2a_hex(data).upper()
+            realData = hexstr.split(sep, 1)[-1]
+            realData = binascii.a2b_hex(realData)
+            with open('{}.tmp'.format(ts_path), 'wb') as f:
+                f.write(realData)
+            os.remove(ts_path)
+            os.rename('{}.tmp'.format(ts_path), ts_path)
+
     def _convertFormat(self):
         # 退出码不为0 表示"ffmpeg -version"命令执行失败，判断为没有安装ffmpeg
         if self._runcmd('ffmpeg -version')[-1] != 0:
             return False
         output_filepath = self._make_path_unique(os.path.splitext(self.dest_filepath)[0] + '.mp4')
         print('\n正在转换成mp4格式...')
-        _, error, returncode = self._runcmd('ffmpeg -i "{}" -c copy "{}"'.format(self.dest_filepath, output_filepath))
+        _, error, returncode = self._runcmd('ffmpeg -i "{}" -c copy -bsf:a aac_adtstoasc "{}"'.format(self.dest_filepath, output_filepath))
         if returncode == 0:
             os.remove(self.dest_filepath)
             if self.dest_filepath.endswith('.mp4'):
@@ -258,6 +286,7 @@ class Downloader:
             return True
         else:
             print('❌转换失败:\n{}'.format(error))
+            os.remove(output_filepath)
             return False
 
 
@@ -280,5 +309,3 @@ if __name__ == '__main__':
     downloader = Downloader(20)
     print('下载 ' + m3u8_url)
     downloader.run(m3u8_url, dest_filepath)
-
-    
