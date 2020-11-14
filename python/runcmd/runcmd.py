@@ -65,10 +65,12 @@ class runcmd:
         '''
         encoding = chardet.detect(output)['encoding']
         encoding = encoding if encoding else 'utf-8'
+        encoding = 'GBK' if encoding == 'GB2312' else encoding
         output = output.decode(encoding)
 
         encoding = chardet.detect(error)['encoding']
         encoding = encoding if encoding else 'utf-8'
+        encoding = 'GBK' if encoding == 'GB2312' else encoding
         error = error.decode(encoding)
                 
         result = {'output': output, 'error': error, 'returncode': returncode}
