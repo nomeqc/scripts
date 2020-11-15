@@ -278,7 +278,9 @@ class Downloader:
             return False
         output_filepath = self._make_path_unique(os.path.splitext(self.dest_filepath)[0] + '.mp4')
         print('\n正在转换成mp4格式...')
-        _, error, returncode = self._runcmd('ffmpeg -i "{}" -c copy -bsf:a aac_adtstoasc "{}"'.format(self.dest_filepath, output_filepath))
+        _, error, returncode = self._runcmd('ffmpeg -i "{}" -c copy "{}"'.format(self.dest_filepath, output_filepath))
+        if returncode != 0 and "'aac_adtstoasc' to fix it" in error:
+            _, error, returncode = self._runcmd('ffmpeg -i "{}" -c copy -bsf:a aac_adtstoasc "{}"'.format(self.dest_filepath, output_filepath))
         if returncode == 0:
             os.remove(self.dest_filepath)
             if self.dest_filepath.endswith('.mp4'):
