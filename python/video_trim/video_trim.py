@@ -34,13 +34,15 @@ def runcmd(cmd):
         1. output 和 error为bytes类型，首先检测编码，需要注意当bytes长度为0时检测到的编码为None
         2. 调用bytes的decode方法，将bytes转换为字符串，避免中文导致的乱码
     '''
-    encoding = chardet.detect(output)['encoding']
-    encoding = encoding if encoding else 'utf-8'
-    output = output.decode(encoding)
+        encoding = chardet.detect(output)['encoding']
+        encoding = encoding if encoding else 'utf-8'
+        encoding = encoding.replace('GB2312', 'GBK')
+        output = output.decode(encoding)
 
-    encoding = chardet.detect(error)['encoding']
-    encoding = encoding if encoding else 'utf-8'
-    error = error.decode(encoding)
+        encoding = chardet.detect(error)['encoding']
+        encoding = encoding if encoding else 'utf-8'
+        encoding = encoding.replace('GB2312', 'GBK')
+        error = error.decode(encoding)
 
     return output, error, returncode
 
