@@ -7,9 +7,9 @@
 
 # 如何使用
 ```bash
-./m3u8.py
+python ./m3u8.py
 ```
 或
 ```bash
-./m3u8.py http://example.com/exp.m3u8 /home/video/exp.mp4
+python ./m3u8.py http://example.com/exp.m3u8 /home/video/exp.mp4
 ```
