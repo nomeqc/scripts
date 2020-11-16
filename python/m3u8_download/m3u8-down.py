@@ -70,12 +70,12 @@ class Downloader:
         # 防止乱码
         encoding = chardet.detect(output)['encoding']
         encoding = encoding if encoding else 'utf-8'
-        encoding = 'GBK' if encoding == 'GB2312' else encoding
+        encoding = encoding.replace('GB2312', 'GBK')
         output = output.decode(encoding)
 
         encoding = chardet.detect(error)['encoding']
         encoding = encoding if encoding else 'utf-8'
-        encoding = 'GBK' if encoding == 'GB2312' else encoding
+        encoding = encoding.replace('GB2312', 'GBK')
         error = error.decode(encoding)
 
         return output, error, returncode
