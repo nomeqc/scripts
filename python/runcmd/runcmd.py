@@ -20,15 +20,18 @@ python3 ./runcmd.py 127.0.0.1:7777
 '''
 
 urls = (
-  '/runcmd', 'runcmd',
-  "/(.*)", "default"
+    '/runcmd', 'runcmd',
+    "/(.*)", "default"
 )
+
 
 class default:
     def GET(self, path):
         return "hello world!"
+
     def POST(self, path):
         return "hello world!"
+
 
 class runcmd:
     def POST(self):
@@ -65,20 +68,21 @@ class runcmd:
         '''
         encoding = chardet.detect(output)['encoding']
         encoding = encoding if encoding else 'utf-8'
-        encoding = 'GBK' if encoding == 'GB2312' else encoding
+        encoding = encoding.replace('GB2312', 'GBK')
         output = output.decode(encoding)
 
         encoding = chardet.detect(error)['encoding']
         encoding = encoding if encoding else 'utf-8'
-        encoding = 'GBK' if encoding == 'GB2312' else encoding
+        encoding = encoding.replace('GB2312', 'GBK')
         error = error.decode(encoding)
                 
         result = {'output': output, 'error': error, 'returncode': returncode}
         web.header('Content-Type', 'application/json; charset=utf-8', unique=True)
         return json.dumps(result, ensure_ascii=False)
 
+
 app = web.application(urls, locals())
+
 
 if __name__ == "__main__":
     app.run()
-    
