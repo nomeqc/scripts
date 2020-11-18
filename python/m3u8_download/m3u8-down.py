@@ -57,15 +57,19 @@ class Downloader:
         return session
 
     def _runcmd(self, cmd):
-        if platform.system().lower() == 'windows':
-            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-        else:
-            # 将命令字符串转换为数组
-            args = shlex.split(cmd)
-            process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False)
-        
-        output, error = process.communicate()
-        returncode = process.returncode
+        try:
+            if platform.system().lower() == 'windows':
+                process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
+            else:
+                # 将命令字符串转换为数组
+                args = shlex.split(cmd)
+                process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False)
+            output, error = process.communicate()
+            returncode = process.returncode
+        except Exception as e:
+            output = ''
+            error = str(e)
+            returncode = 2
 
         # 防止乱码
         encoding = chardet.detect(output)['encoding']
@@ -79,6 +83,11 @@ class Downloader:
         error = error.decode(encoding)
 
         return output, error, returncode
+
+    def _get_md5(self, s):
+        m = hashlib.md5()
+        m.update(s if sys.version_info.major == 2 else s.encode('utf-8'))
+        return m.hexdigest()
 
     def _make_path_unique(self, path, isfile=True):
         unique_path = path
@@ -104,6 +113,7 @@ class Downloader:
             m3u8_obj = m3u8.loads(m3u8_content)
         else:
             m3u8_obj = m3u8.load(m3u8_url)
+            m3u8_content = m3u8_obj.dumps()
         
         # 有的m3u8文件里的片段url是相对路径，补全为绝对路径
         base_uri = os.path.dirname(m3u8_url)
@@ -116,15 +126,28 @@ class Downloader:
         if self.ts_total == 0:
             print('没有任何片段')
             sys.exit()
+        if os.path.isfile(dest_filepath):
+            raise Exception(f'❌错误：无法写入\'{dest_filepath}\'，因为它是目录')
         if not os.path.isdir(os.path.dirname(dest_filepath)):
-            os.makedirs(os.path.dirname(dest_filepath))
-        self.dest_filepath = dest_filepath if os.path.basename(dest_filepath) else os.path.join(os.path.dirname(dest_filepath), os.path.basename(m3u8_url))    
-        self.dest_filepath = os.path.realpath(self.dest_filepath)
-
-        self.tmp_dir = tempfile.mkdtemp(dir=os.path.dirname(self.dest_filepath))
+            os.makedirs(os.path.dirname(dest_filepath))    
+        self.dest_filepath = os.path.realpath(dest_filepath)
+        self.tmp_dir = os.path.join(os.path.dirname(self.dest_filepath), self._get_md5(m3u8_content))
+        if not os.path.isdir(self.tmp_dir):
+            if os.path.isfile(self.tmp_dir):
+                raise Exception(f'❌错误：\'{self.tmp_dir}\'已存在，但它不是目录')
+            os.makedirs(self.tmp_dir)
+        
         self.tsurl_list = [seg.uri for seg in self.m3u8_obj.segments]
+        # 读取成功下载的记录 以及统计还未下载的分片
+        ts_urls = []
+        for url in self.tsurl_list:
+            ts_filepath = os.path.join(self.tmp_dir, self._get_md5(url))
+            if os.path.isfile(ts_filepath):
+                self.succed[self.tsurl_list.index(url)] = ts_filepath
+            else:
+                ts_urls.append(url)
 
-        self._download(self.tsurl_list)
+        self._download(ts_urls)
         self._merge_file()
         self._convertFormat()
 
@@ -141,7 +164,7 @@ class Downloader:
         response = requests.get(url=m3u8_url, headers=headers, verify=False)
         return response.text
 
-    def _download(self, tsurl_list):
+    def _download(self, ts_urls):
         # 如果有加密，先下载首个片段的key
         seg = self.m3u8_obj.segments[0]
         if hasattr(seg.key, 'uri') and seg.key.uri:
@@ -150,7 +173,7 @@ class Downloader:
                 sys.exit()
             self._get_key_content(seg)
 
-        reqs = (grequests.get(url, timeout=5) for url in tsurl_list)
+        reqs = (grequests.get(url, timeout=5) for url in ts_urls)
         for response in grequests.imap(reqs, size=self.pool_size, exception_handler=self.exception_handler):
             self.response_handler(response)
 
@@ -160,10 +183,10 @@ class Downloader:
                 return
             self.retry_count += 1
             print('\n有{}个片段下载失败，3秒后尝试第{}次重新下载..'.format(len(self.failed), self.retry_count))
-            tsurl_list = self.failed
+            ts_urls = self.failed
             self.failed = []
             time.sleep(3)
-            self._download(tsurl_list)
+            self._download(ts_urls)
         print('')
 
     def exception_handler(self, request, exception):
@@ -176,10 +199,7 @@ class Downloader:
         index = self.tsurl_list.index(url)
         if r.ok:
             seg = self.m3u8_obj.segments[index]
-            m = hashlib.md5()
-            m.update(url if sys.version_info.major == 2 else url.encode('utf-8'))
-            url_md5 = m.hexdigest()
-            file_path = os.path.join(self.tmp_dir, url_md5)
+            file_path = os.path.join(self.tmp_dir, self._get_md5(url))
             with open(file_path, 'wb') as f:
                 f.write(r.content)
             is_enc = hasattr(seg.key, 'uri') and seg.key.uri
@@ -191,7 +211,7 @@ class Downloader:
                 key_content = self._get_key_content(seg)
                 self._decrypt(file_path, file_path + '.dec', iv, key_content)
                 os.remove(file_path)
-                file_path = file_path + '.dec'
+                os.rename(file_path + '.dec', file_path)
             
             self._discard_fake(file_path)
 
@@ -202,7 +222,7 @@ class Downloader:
             progress_step = 2.5
             total_step = int(math.ceil(100.0 / progress_step))
             current_step = int(total_step * (progress / 100.0))
-            s = "\r已下载 %d%% |%s%s| [%d/%d]" % (progress, "█" * current_step, " " * (total_step - current_step), len(self.succed), self.ts_total)   #\r表示回车但是不换行，利用这个原理进行百分比的刷新
+            s = "\r已下载 %d%% |%s%s| [%d/%d] " % (progress, "█" * current_step, " " * (total_step - current_step), len(self.succed), self.ts_total)   #\r表示回车但是不换行，利用这个原理进行百分比的刷新
             sys.stdout.write(s)       # 向标准输出终端写内容
             sys.stdout.flush()        # 立即将缓存的内容刷新到标准输出
         else:
@@ -226,27 +246,16 @@ class Downloader:
             sys.exit()
 
     def _merge_file(self):
-        index = 0
-        outfile = None
-        file_num = 0
-        while index < self.ts_total:
-            infile_path = self.succed.get(index, '')
-            if infile_path:
-                if not outfile:
-                    self.tmp_filepath = self._make_path_unique(self.dest_filepath + '.tmp')
-                    outfile = open(self.tmp_filepath, 'wb')
-                infile = open(infile_path, 'rb')
-                outfile.write(infile.read())
-                infile.close()
+        self.tmp_filepath = self._make_path_unique(self.dest_filepath + '.tmp')
+        with open(self.tmp_filepath, 'wb') as outfile:
+            for i in list(range(self.ts_total)):
+                infile_path = self.succed.get(i, '')
+                with open(infile_path, 'rb') as infile:
+                    outfile.write(infile.read())
                 os.remove(infile_path)
-
-                file_num += 1
-                s = "\r视频合并中 [{}/{}]".format(file_num, len(self.succed))
+                s = "\r视频合并中 [{}/{}] ".format(i + 1, len(self.succed))
                 sys.stdout.write(s)
                 sys.stdout.flush()
-            index += 1
-        if outfile:
-            outfile.close()
         self.dest_filepath = self._make_path_unique(self.dest_filepath)
         os.rename(self.tmp_filepath, self.dest_filepath)
         shutil.rmtree(self.tmp_dir)
