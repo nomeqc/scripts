@@ -28,7 +28,6 @@ import os
 import math
 import shlex
 import subprocess
-import tempfile
 import shutil
 import time
 import hashlib
