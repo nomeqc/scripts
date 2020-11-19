@@ -5,6 +5,10 @@
 - 自动转换成mp4格式(需要安装`ffmpeg`)
 - 兼容python2和python3
 
+# 下载
+```bash
+wget -O "m3u8-down.py" https://git.io/wl_m3u8down 
+```
 # 如何使用
 ```bash
 python ./m3u8.py
