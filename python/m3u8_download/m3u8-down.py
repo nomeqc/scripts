@@ -1,49 +1,36 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 #coding: utf-8
 
-import m3u8
-import grequests
-import requests
-import platform
-import chardet
-import re
-import imghdr
-import binascii
-
-import sys
-from sys import version_info
-if version_info.major == 3:
-    pass
-elif version_info.major == 2:
-    reload(sys)
-    sys.setdefaultencoding('UTF8')
-    try:
-        input = raw_input
-    except NameError:
-        pass
-else:
-    print ("Unknown python version - input function not safe")
-
 import os
+import sys
+import re
 import math
 import shlex
 import subprocess
 import shutil
 import time
 import hashlib
+import imghdr
+import binascii
+import platform
+
+import grequests
+import requests
+import m3u8
+import chardet
+
 
 class Downloader:
-    def __init__(self, pool_size, retry=3):
+    def __init__(self, pool_size, max_retries=3):
         self.pool_size = pool_size
-        self.session = self._get_http_session(pool_size, pool_size, retry)
-        self.retry = retry
-        self.retry_count = 0
+        self.session = self._get_http_session(pool_size, pool_size, max_retries)
+        self.max_retries = max_retries
+        self.retries = 0
         self.m3u8_obj = None
         self.tsurl_list = []
         self.ts_total = 0
         self.dest_filepath = ""
         self.tmp_dir = ""
-        self.tmp_filepath = ""
         self.key_map = {}
         self.succed = {}
         self.failed = []
@@ -85,7 +72,7 @@ class Downloader:
 
     def _get_md5(self, s):
         m = hashlib.md5()
-        m.update(s if sys.version_info.major == 2 else s.encode('utf-8'))
+        m.update(s.encode('utf-8'))
         return m.hexdigest()
 
     def _make_path_unique(self, path, isfile=True):
@@ -125,7 +112,7 @@ class Downloader:
         if self.ts_total == 0:
             print('没有任何片段')
             sys.exit()
-        if os.path.isfile(dest_filepath):
+        if os.path.isdir(dest_filepath):
             raise Exception(f'❌错误：无法写入\'{dest_filepath}\'，因为它是目录')
         if not os.path.isdir(os.path.dirname(dest_filepath)):
             os.makedirs(os.path.dirname(dest_filepath))    
@@ -177,11 +164,11 @@ class Downloader:
             self.response_handler(response)
 
         if self.failed:
-            if self.retry_count >= self.retry:
-                print('\n经过{}次尝试，还有{}个片段下载失败'.format(self.retry_count, len(self.failed)))
+            if self.retries >= self.max_retries:
+                print(f'\n经过{self.retries}次尝试，还有{len(self.failed)}个片段下载失败')
                 return
-            self.retry_count += 1
-            print('\n有{}个片段下载失败，3秒后尝试第{}次重新下载..'.format(len(self.failed), self.retry_count))
+            self.retries += 1
+            print(f'\n有{len(self.failed)}个片段下载失败，3秒后尝试第{self.retries}次重新下载..')
             ts_urls = self.failed
             self.failed = []
             time.sleep(3)
@@ -189,7 +176,7 @@ class Downloader:
         print('')
 
     def exception_handler(self, request, exception):
-        print('\n请求失败: {}  {}'.format(request.url, str(exception)))
+        print(f'\n请求失败: {request.url}  {str(exception)}')
         self.failed.append(request.url)
 
     def response_handler(self, r, *args, **kwargs):
@@ -225,7 +212,7 @@ class Downloader:
             sys.stdout.write(s)       # 向标准输出终端写内容
             sys.stdout.flush()        # 立即将缓存的内容刷新到标准输出
         else:
-            print("\n下载失败: " + url)
+            print(f"\n下载失败: {url}")
             self.failed.append(url)
 
     def _get_key_content(self, seg):
@@ -233,30 +220,30 @@ class Downloader:
         key_content = self.key_map.get(key_uri, '')
         if not key_content:
             resp = self.session.get(key_uri, timeout=5)
-            key_content = resp.content.hex() if 'bytes' in str(type(resp.content)) else resp.content.encode('hex')
+            key_content = resp.content.hex()
             self.key_map[key_uri] = key_content
         return key_content
 
     def _decrypt(self, infile, outfile, iv, key):
-        cmd = 'openssl aes-128-cbc -d -in "{}" -out "{}" -nosalt -iv {} -K {}'.format(infile, outfile, iv, key)
+        cmd = f'openssl aes-128-cbc -d -in "{infile}" -out "{outfile}" -nosalt -iv {iv} -K {key}'
         _, error, returncode = self._runcmd(cmd)
         if returncode != 0:
-            print('❌解密失败：' + error)
+            print(f'❌解密失败：{error}')
             sys.exit()
 
     def _merge_file(self):
-        self.tmp_filepath = self._make_path_unique(self.dest_filepath + '.tmp')
-        with open(self.tmp_filepath, 'wb') as outfile:
+        tmp_filepath = self._make_path_unique(self.dest_filepath + '.tmp')
+        with open(tmp_filepath, 'wb') as outfile:
             for i in list(range(self.ts_total)):
                 infile_path = self.succed.get(i, '')
                 with open(infile_path, 'rb') as infile:
                     outfile.write(infile.read())
                 os.remove(infile_path)
-                s = "\r视频合并中 [{}/{}] ".format(i + 1, len(self.succed))
+                s = f"\r视频合并中 [{i+1}/{len(self.succed)}] "
                 sys.stdout.write(s)
                 sys.stdout.flush()
         self.dest_filepath = self._make_path_unique(self.dest_filepath)
-        os.rename(self.tmp_filepath, self.dest_filepath)
+        os.rename(tmp_filepath, self.dest_filepath)
         shutil.rmtree(self.tmp_dir)
     
     '''
@@ -275,10 +262,10 @@ class Downloader:
                 hexstr = binascii.b2a_hex(data).upper()
             realData = hexstr.split(sep, 1)[-1]
             realData = binascii.a2b_hex(realData)
-            with open('{}.tmp'.format(ts_path), 'wb') as f:
+            with open(f'{ts_path}.tmp', 'wb') as f:
                 f.write(realData)
             os.remove(ts_path)
-            os.rename('{}.tmp'.format(ts_path), ts_path)
+            os.rename(f'{ts_path}.tmp', ts_path)
 
     def _convertFormat(self):
         # 退出码不为0 表示"ffmpeg -version"命令执行失败，判断为没有安装ffmpeg
@@ -286,9 +273,9 @@ class Downloader:
             return False
         output_filepath = self._make_path_unique(os.path.splitext(self.dest_filepath)[0] + '.mp4')
         print('\n正在转换成mp4格式...')
-        _, error, returncode = self._runcmd('ffmpeg -i "{}" -c copy "{}"'.format(self.dest_filepath, output_filepath))
+        _, error, returncode = self._runcmd(f'ffmpeg -i "{self.dest_filepath}" -c copy "{output_filepath}"')
         if returncode != 0 and "'aac_adtstoasc' to fix it" in error:
-            _, error, returncode = self._runcmd('ffmpeg -i "{}" -c copy -bsf:a aac_adtstoasc "{}"'.format(self.dest_filepath, output_filepath))
+            _, error, returncode = self._runcmd(f'ffmpeg -i "{self.dest_filepath}" -c copy -bsf:a aac_adtstoasc "{output_filepath}"')
         if returncode == 0:
             os.remove(self.dest_filepath)
             if self.dest_filepath.endswith('.mp4'):
@@ -297,7 +284,7 @@ class Downloader:
             self.dest_filepath = output_filepath
             return True
         else:
-            print('❌转换失败:\n{}'.format(error))
+            print(f'❌转换失败:\n{error}')
             os.remove(output_filepath)
             return False
 
@@ -305,7 +292,7 @@ class Downloader:
 if __name__ == '__main__':
 
     m3u8_url = sys.argv[1] if len(sys.argv) > 1 else input("请输入m3u8 url：")
-    dest_filepath = sys.argv[2] if len(sys.argv) > 2 else input("请输入保存的路径(如: /home/video/exp.mp4)： ")
+    dest_filepath = sys.argv[2] if len(sys.argv) > 2 else input("请输入保存的路径： ")
     
     if not m3u8_url.strip():
         print('❌m3u8_url不能为空')
