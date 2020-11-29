@@ -1,59 +1,27 @@
 {
-  "log": {
-    "access": "/var/log/v2ray/access.log",
-    "error": "/var/log/v2ray/error.log",
-    "loglevel": "warning"
-  },
-  "dns": {},
-  "stats": {},
   "inbounds": [
     {
       "listen": "127.0.0.1",
+      "port": 44222,
+      "protocol": "vmess",
+      "settings": {
+        "clients": [
+          {
+            "id": "2d2f5648-2646-4722-b31f-fd1369023e37"
+          }
+        ]
+      },
       "streamSettings": {
         "network": "ws",
         "wsSettings": {
           "path": "/v2"
-        },
-        "security": "none"
-      },
-      "tag": "in-0",
-      "settings": {
-        "clients": [
-          {
-            "id": "2d2f5648-2646-4722-b31f-fd1369023e37",
-            "alterId": 0
-          }
-        ]
-      },
-      "protocol": "vmess",
-      "port": 44222
+        }
+      }
     }
   ],
   "outbounds": [
     {
-      "tag": "direct",
-      "settings": {},
       "protocol": "freedom"
-    },
-    {
-      "tag": "blocked",
-      "settings": {},
-      "protocol": "blackhole"
     }
-  ],
-  "routing": {
-    "rules": [
-      {
-        "type": "field",
-        "ip": [
-          "geoip:private"
-        ],
-        "outboundTag": "blocked"
-      }
-    ],
-    "domainStrategy": "AsIs"
-  },
-  "policy": {},
-  "reverse": {},
-  "transport": {}
+  ]
 }
