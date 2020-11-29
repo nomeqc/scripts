@@ -11,9 +11,12 @@ colorEcho(){
     echo -e "\033[${COLOR}${@:2}\033[0m"
 }
 
-wget -O go.sh https://install.direct/go.sh && sh go.sh
-(curl -L -s https://raw.githubusercontent.com/Nomeqc/scripts/master/v2ray/config.json)>/etc/v2ray/config.json
-service v2ray restart
+wget -O install-release.sh https://raw.githubusercontent.com/v2fly/fhs-install-v2ray/master/install-release.sh && sh install-release.sh
+(curl -L -s https://raw.githubusercontent.com/Nomeqc/scripts/master/v2ray/config.json)>/usr/local/etc/v2ray/config.json
+# 设置开机自启动
+systemctl enable v2ray
+# 重启v2ray
+systemctl restart v2ray
 
 #等待2s检测 v2ray服务端口是否开放
 colorEcho ${BLUE} "正在检测v2ray服务是否已启动..."
