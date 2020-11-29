@@ -10,8 +10,7 @@ colorEcho(){
     COLOR=$1
     echo -e "\033[${COLOR}${@:2}\033[0m"
 }
-
-wget -O install-release.sh https://raw.githubusercontent.com/v2fly/fhs-install-v2ray/master/install-release.sh && bash install-release.sh
+bash <(curl -L -s https://raw.githubusercontent.com/v2fly/fhs-install-v2ray/master/install-release.sh)
 (curl -L -s https://raw.githubusercontent.com/Nomeqc/scripts/master/v2ray/config.json)>/usr/local/etc/v2ray/config.json
 # 设置开机自启动
 systemctl enable v2ray
@@ -29,7 +28,6 @@ else
 	colorEcho ${RED} "v2ray服务启动失败"
 	exit
 fi
-
 
 echo -e "\n在网站的nginx配置文件中加入以下配置："
 conf=`cat << EOF
