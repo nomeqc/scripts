@@ -34,14 +34,18 @@ fi
 echo -e "\n在网站的nginx配置文件中加入以下配置："
 conf=`cat << EOF
  location /v2 {
+        if ($http_upgrade != "websocket") { # WebSocket协商失败时返回404
+            return 404;
+        }
         proxy_redirect off;
-        proxy_pass http://127.0.0.1:44222;
+        proxy_pass http://127.0.0.1:44222; # 假设WebSocket监听在环回地址的44222端口上
         proxy_http_version 1.1;
         proxy_set_header Upgrade \\$http_upgrade;
         proxy_set_header Connection "upgrade";
-        proxy_set_header Host \\$http_host;
-        proxy_intercept_errors on;
-        error_page 400 /index.html;
+        proxy_set_header Host \\$host;
+        # Show real IP in v2ray access.log
+        proxy_set_header X-Real-IP \\$remote_addr;
+        proxy_set_header X-Forwarded-For \\$proxy_add_x_forwarded_for;
     }
 EOF`
 colorEcho ${BLUE} "${conf}\n"
@@ -57,7 +61,7 @@ echo -n "额外ID(alertId)："
 colorEcho ${BLUE} "0"
 
 echo -n "加密方式(security)："
-colorEcho ${BLUE} "auto"
+colorEcho ${BLUE} "none"
 
 echo -n "传输协议(network)："
 colorEcho ${BLUE} "ws"
