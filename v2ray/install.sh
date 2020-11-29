@@ -32,7 +32,7 @@ fi
 echo -e "\n在网站的nginx配置文件中加入以下配置："
 conf=`cat << EOF
  location /v2 {
-        if ($http_upgrade != "websocket") { # WebSocket协商失败时返回404
+        if (\\$http_upgrade != "websocket") { # WebSocket协商失败时返回404
             return 404;
         }
         proxy_redirect off;
