@@ -19,6 +19,9 @@ import requests
 import m3u8
 import chardet
 
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 
 class Downloader:
     def __init__(self, pool_size, max_retries=3):
@@ -29,8 +32,9 @@ class Downloader:
         self.m3u8_obj = None
         self.tsurl_list = []
         self.ts_total = 0
-        self.dest_filepath = ""
-        self.tmp_dir = ""
+        self.output_mp4 = ""
+        self.output_dir = ""
+        self.output_ts = ''
         self.key_map = {}
         self.succed = {}
         self.failed = []
@@ -50,25 +54,26 @@ class Downloader:
                 # 将命令字符串转换为数组
                 args = shlex.split(cmd)
                 process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False)
-            output, error = process.communicate()
+            out, err = process.communicate()
             returncode = process.returncode
         except Exception as e:
-            output = ''
-            error = str(e)
+            out = ''
+            err = str(e)
             returncode = 2
 
         # 防止乱码
-        encoding = chardet.detect(output)['encoding']
+        encoding = chardet.detect(out)['encoding']
         encoding = encoding if encoding else 'utf-8'
         encoding = encoding.replace('GB2312', 'GBK')
-        output = output.decode(encoding)
+        out = out.decode(encoding)
 
-        encoding = chardet.detect(error)['encoding']
+        encoding = chardet.detect(err)['encoding']
         encoding = encoding if encoding else 'utf-8'
         encoding = encoding.replace('GB2312', 'GBK')
-        error = error.decode(encoding)
+        err = err.decode(encoding)
 
-        return output, error, returncode
+        output = out if out else err
+        return output, returncode
 
     def _get_md5(self, s):
         m = hashlib.md5()
@@ -116,18 +121,18 @@ class Downloader:
             raise Exception(f'❌错误：无法写入\'{dest_filepath}\'，因为它是目录')
         if not os.path.isdir(os.path.dirname(dest_filepath)):
             os.makedirs(os.path.dirname(dest_filepath))    
-        self.dest_filepath = os.path.realpath(dest_filepath)
-        self.tmp_dir = os.path.join(os.path.dirname(self.dest_filepath), self._get_md5(m3u8_content))
-        if not os.path.isdir(self.tmp_dir):
-            if os.path.isfile(self.tmp_dir):
-                raise Exception(f'❌错误：\'{self.tmp_dir}\'已存在，但它不是目录')
-            os.makedirs(self.tmp_dir)
+        self.output_mp4 = os.path.realpath(dest_filepath)
+        self.output_dir = os.path.join(os.path.dirname(self.output_mp4), self._get_md5(m3u8_content))
+        if not os.path.isdir(self.output_dir):
+            if os.path.isfile(self.output_dir):
+                raise Exception(f'❌错误：\'{self.output_dir}\'已存在，但它不是目录')
+            os.makedirs(self.output_dir)
         
         self.tsurl_list = [seg.uri for seg in self.m3u8_obj.segments]
         # 读取成功下载的记录 以及统计还未下载的分片
         ts_urls = []
         for url in self.tsurl_list:
-            ts_filepath = os.path.join(self.tmp_dir, self._get_md5(url))
+            ts_filepath = os.path.join(self.output_dir, self._get_md5(url))
             if os.path.isfile(ts_filepath):
                 self.succed[self.tsurl_list.index(url)] = ts_filepath
             else:
@@ -135,9 +140,9 @@ class Downloader:
 
         self._download(ts_urls)
         self._merge_file()
-        self._convertFormat()
-
-        print('已保存到 {}\n'.format(self.dest_filepath))
+        if self._convert_to_mp4():
+            shutil.rmtree(self.output_dir)
+        print('已保存到 {}\n'.format(self.output_mp4))
 
     def _get_m3u8_content(self, m3u8_url):
         result = re.search(r'(https?://[^/\n\s]+)', m3u8_url)
@@ -147,7 +152,7 @@ class Downloader:
             'User-Agent': 'AppleCoreMedia/1.0.0.17D50 (iPhone; U; CPU OS 13_3_1 like Mac OS X; en_us)',
             'Referer': ref
         }
-        response = requests.get(url=m3u8_url, headers=headers, verify=False)
+        response = requests.get(url=m3u8_url, headers=headers, timeout=6, verify=False)
         return response.text
 
     def _download(self, ts_urls):
@@ -159,7 +164,7 @@ class Downloader:
                 sys.exit()
             self._get_key_content(seg)
 
-        reqs = (grequests.get(url, timeout=5) for url in ts_urls)
+        reqs = (grequests.get(url, timeout=5, verify=False) for url in ts_urls)
         for response in grequests.imap(reqs, size=self.pool_size, exception_handler=self.exception_handler):
             self.response_handler(response)
 
@@ -185,7 +190,7 @@ class Downloader:
         index = self.tsurl_list.index(url)
         if r.ok:
             seg = self.m3u8_obj.segments[index]
-            file_path = os.path.join(self.tmp_dir, self._get_md5(url))
+            file_path = os.path.join(self.output_dir, self._get_md5(url))
             with open(file_path, 'wb') as f:
                 f.write(r.content)
             is_enc = hasattr(seg.key, 'uri') and seg.key.uri
@@ -219,21 +224,21 @@ class Downloader:
         key_uri = seg.key.uri
         key_content = self.key_map.get(key_uri, '')
         if not key_content:
-            resp = self.session.get(key_uri, timeout=5)
+            resp = self.session.get(key_uri, timeout=5, verify=False)
             key_content = resp.content.hex()
             self.key_map[key_uri] = key_content
         return key_content
 
     def _decrypt(self, infile, outfile, iv, key):
         cmd = f'openssl aes-128-cbc -d -in "{infile}" -out "{outfile}" -nosalt -iv {iv} -K {key}'
-        _, error, returncode = self._runcmd(cmd)
+        output, returncode = self._runcmd(cmd)
         if returncode != 0:
-            print(f'❌解密失败：{error}')
+            print(f'❌解密失败：{output}')
             sys.exit()
 
     def _merge_file(self):
-        tmp_filepath = self._make_path_unique(self.dest_filepath + '.tmp')
-        with open(tmp_filepath, 'wb') as outfile:
+        self.output_ts = os.path.join(self.output_dir, os.path.splitext(os.path.basename(self.output_mp4))[0] + '.ts')
+        with open(self.output_ts, 'wb') as outfile:
             for i in list(range(self.ts_total)):
                 infile_path = self.succed.get(i, '')
                 with open(infile_path, 'rb') as infile:
@@ -242,12 +247,9 @@ class Downloader:
                 s = f"\r视频合并中 [{i+1}/{len(self.succed)}] "
                 sys.stdout.write(s)
                 sys.stdout.flush()
-        self.dest_filepath = self._make_path_unique(self.dest_filepath)
-        os.rename(tmp_filepath, self.dest_filepath)
-        shutil.rmtree(self.tmp_dir)
     
     '''
-     如果ts文件伪装成图片，将图片数据去除掉
+    如果ts文件伪装成图片，将图片数据去除掉
     '''
     def _discard_fake(self, ts_path):
         fmt = imghdr.what(ts_path)
@@ -267,44 +269,41 @@ class Downloader:
             os.remove(ts_path)
             os.rename(f'{ts_path}.tmp', ts_path)
 
-    def _convertFormat(self):
+    def _convert_to_mp4(self):
         # 退出码不为0 表示"ffmpeg -version"命令执行失败，判断为没有安装ffmpeg
         if self._runcmd('ffmpeg -version')[-1] != 0:
             return False
-        output_filepath = self._make_path_unique(os.path.splitext(self.dest_filepath)[0] + '.mp4')
+        cmd = f'ffprobe "{self.output_ts}"'
+        output, returncode = self._runcmd(cmd)
+        if returncode != 0:
+            raise Exception(f'检测编码失败\n{output}')
+        bit_stream_filter = '-bsf:a aac_adtstoasc' if 'Audio: aac' in output else ''
+        if not self.output_mp4.endswith('.mp4'):
+            self.output_mp4 = self.output_mp4 + '.mp4'
+        self.output_mp4 = self._make_path_unique(self.output_mp4)
         print('\n正在转换成mp4格式...')
-        _, error, returncode = self._runcmd(f'ffmpeg -i "{self.dest_filepath}" -c copy "{output_filepath}"')
-        if returncode != 0 and "'aac_adtstoasc' to fix it" in error:
-            _, error, returncode = self._runcmd(f'ffmpeg -i "{self.dest_filepath}" -c copy -bsf:a aac_adtstoasc "{output_filepath}"')
+        cmd = f'ffmpeg -i "{self.output_ts}" -c copy {bit_stream_filter} "{self.output_mp4}"'
+        output, returncode = self._runcmd(cmd)
         if returncode == 0:
-            os.remove(self.dest_filepath)
-            if self.dest_filepath.endswith('.mp4'):
-                os.rename(output_filepath, self.dest_filepath)
-                output_filepath = self.dest_filepath
-            self.dest_filepath = output_filepath
             return True
         else:
-            print(f'❌转换失败:\n{error}')
-            os.remove(output_filepath)
+            print(f'❌"{self.output_ts}" 转换成mp4格式失败')
             return False
 
 
 if __name__ == '__main__':
-
     m3u8_url = sys.argv[1] if len(sys.argv) > 1 else input("请输入m3u8 url：")
-    dest_filepath = sys.argv[2] if len(sys.argv) > 2 else input("请输入保存的路径： ")
-    
+    output_filepath = sys.argv[2] if len(sys.argv) > 2 else input("请输入保存的路径： ")
     if not m3u8_url.strip():
         print('❌m3u8_url不能为空')
-        print('格式：./m3u8-down.py [m3u8_url] [dest_filepath]')
-        print('示例：./m3u8-down.py http://example.com/exp.m3u8 /home/video/exp.mp4')
+        print('格式：./m3u8-down.py [m3u8_url] [output_video]')
+        print('示例：./m3u8-down.py http://example.com/exp.m3u8 OUTPUT.mp4')
         sys.exit()
-    if not dest_filepath.strip():
-        print('❌dest_filepath不能为空')
-        print('格式：./m3u8-down.py [m3u8_url] [dest_filepath]')
-        print('示例：./m3u8-down.py http://example.com/exp.m3u8 /home/video/exp.mp4')
+    if not output_filepath.strip():
+        print('❌output_video不能为空')
+        print('格式：./m3u8-down.py [m3u8_url] [output_video]')
+        print('示例：./m3u8-down.py http://example.com/exp.m3u8 OUTPUT.mp4')
         sys.exit()
-    
     downloader = Downloader(20)
     print('下载 ' + m3u8_url)
-    downloader.run(m3u8_url, dest_filepath)
+    downloader.run(m3u8_url, output_filepath)
