@@ -12,7 +12,6 @@ import time
 import hashlib
 import imghdr
 import binascii
-import platform
 
 import grequests
 import requests
@@ -48,7 +47,7 @@ class Downloader:
 
     def _runcmd(self, cmd):
         try:
-            if platform.system().lower() == 'windows':
+            if os.name == 'nt':
                 process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
             else:
                 # 将命令字符串转换为数组
@@ -60,19 +59,9 @@ class Downloader:
             out = ''
             err = str(e)
             returncode = 2
-
-        # 防止乱码
-        encoding = chardet.detect(out)['encoding']
-        encoding = encoding if encoding else 'utf-8'
-        encoding = encoding.replace('GB2312', 'GBK')
-        out = out.decode(encoding)
-
-        encoding = chardet.detect(err)['encoding']
-        encoding = encoding if encoding else 'utf-8'
-        encoding = encoding.replace('GB2312', 'GBK')
-        err = err.decode(encoding)
-
-        output = out if out else err
+        out = out.decode('utf-8', errors='ignore')
+        err = err.decode('utf-8', errors='ignore')
+        output = out + err
         return output, returncode
 
     def _get_md5(self, s):
