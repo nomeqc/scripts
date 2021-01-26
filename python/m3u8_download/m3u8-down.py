@@ -1,24 +1,21 @@
 #!/usr/bin/env python3
 #coding: utf-8
 
-import os
-import sys
-import re
-import math
-import shlex
-import subprocess
-import shutil
-import time
-import hashlib
-import imghdr
 import binascii
+import hashlib
+import math
+import os
+import re
+import shutil
+import sys
+import time
 
 import grequests
-import requests
 import m3u8
-import chardet
-
+import requests
 import urllib3
+
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
@@ -45,29 +42,30 @@ class Downloader:
         session.mount('https://', adapter)
         return session
 
-    def _runcmd(self, cmd):
+    def _runcmd(self, cmd, shell=False):
         try:
-            if os.name == 'nt':
-                process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
+            import shlex
+            import subprocess
+            args = cmd if shell else shlex.split(cmd)
+            process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=shell)
+            stdout, stderr = process.communicate()
+            output = stdout + stderr
+            if shell:
+                try:
+                    import locale
+                    output = output.decode(locale.getpreferredencoding(False))
+                except Exception:
+                    output = output.decode('UTF-8', errors='ignore')
             else:
-                # 将命令字符串转换为数组
-                args = shlex.split(cmd)
-                process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False)
-            out, err = process.communicate()
+                output = output.decode('UTF-8', errors='ignore')
             returncode = process.returncode
         except Exception as e:
-            out = ''
-            err = str(e)
+            output = str(e)
             returncode = 2
-        out = out.decode('utf-8', errors='ignore')
-        err = err.decode('utf-8', errors='ignore')
-        output = out + err
         return output, returncode
 
     def _get_md5(self, s):
-        m = hashlib.md5()
-        m.update(s.encode('utf-8'))
-        return m.hexdigest()
+        return hashlib.md5(s.encode('utf-8')).hexdigest()
 
     def _make_path_unique(self, path, isfile=True):
         unique_path = path
@@ -241,22 +239,28 @@ class Downloader:
     如果ts文件伪装成图片，将图片数据去除掉
     '''
     def _discard_fake(self, ts_path):
-        fmt = imghdr.what(ts_path)
-        seps = {
-            'png': b'0000000049454E44AE426082',
-            'jpeg': b'FFD9'
-        }
-        sep = seps.get(fmt)
-        if sep:
-            with open(ts_path, 'rb') as f:
-                data = f.read()
-                hexstr = binascii.b2a_hex(data).upper()
-            realData = hexstr.split(sep, 1)[-1]
-            realData = binascii.a2b_hex(realData)
-            with open(f'{ts_path}.tmp', 'wb') as f:
-                f.write(realData)
-            os.remove(ts_path)
-            os.rename(f'{ts_path}.tmp', ts_path)
+        with open(ts_path, 'rb') as fp:
+            data = fp.read()
+            hex_bytes = binascii.hexlify(data)
+            left = hex_bytes.find(b'47')
+            while left > -1:
+                current_index = hex_bytes.find(b'47', left + 1)
+                if left + 188 * 2 == current_index:
+                    break
+                left = current_index
+            if left == -1:
+                return
+            right = hex_bytes.rfind(b'47')
+            hex_length = len(hex_bytes)
+            while right + 188 * 2 > hex_length:
+                right = hex_bytes.rfind(b'47', 0, right)
+            right += 188 * 2
+            tmp_filepath = f'{ts_path}.tmp'
+            with open(tmp_filepath, 'wb') as fp:
+                hex_b = hex_bytes[left:right]
+                fp.write(binascii.unhexlify(hex_b))
+        os.remove(ts_path)
+        os.rename(tmp_filepath, ts_path)
 
     def _convert_to_mp4(self):
         # 退出码不为0 表示"ffmpeg -version"命令执行失败，判断为没有安装ffmpeg
@@ -281,6 +285,7 @@ class Downloader:
 
 
 if __name__ == '__main__':
+    # print(sys.argv)
     m3u8_url = sys.argv[1] if len(sys.argv) > 1 else input("请输入m3u8 url：")
     output_filepath = sys.argv[2] if len(sys.argv) > 2 else input("请输入保存的路径： ")
     if not m3u8_url.strip():
