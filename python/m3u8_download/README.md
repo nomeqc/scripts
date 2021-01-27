@@ -1,9 +1,12 @@
 # m3u8下载器
+### 要求
+- python3
+- ffmpeg，用于格式转换
+- openssl，用于支持解密TS文件
 ### 支持：
 - 并发下载m3u8片段
 - aes-128-cbc解密
 - 自动转换成mp4格式(需要安装`ffmpeg`)
-- 兼容python2和python3
 
 # 下载
 ```bash
