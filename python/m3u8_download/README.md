@@ -7,7 +7,7 @@
 
 # 下载
 ```bash
-wget -O "m3u8-down.py" https://git.io/wl_m3u8down 
+wget -O "m3u8-down.py" https://git.io/m3u8down 
 ```
 # 如何使用
 ```bash
