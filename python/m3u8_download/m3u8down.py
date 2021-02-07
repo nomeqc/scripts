@@ -32,7 +32,6 @@ class Downloader:
         self.output_ts = ''
         self.key_map = {}
         self.succed = {}
-        self.failed = []
 
     def _get_http_session(self, pool_connections, pool_maxsize, max_retries):
         session = requests.Session()
@@ -114,17 +113,7 @@ class Downloader:
                 raise Exception(f'❌错误：\'{self.output_dir}\'已存在，但它不是目录')
             os.makedirs(self.output_dir)
         
-        self.tsurl_list = [seg.uri for seg in self.m3u8_obj.segments]
-        # 读取成功下载的记录 以及统计还未下载的分片
-        ts_urls = []
-        for url in self.tsurl_list:
-            ts_filepath = os.path.join(self.output_dir, self._get_md5(url))
-            if os.path.isfile(ts_filepath):
-                self.succed[self.tsurl_list.index(url)] = ts_filepath
-            else:
-                ts_urls.append(url)
-
-        self._download(ts_urls)
+        self._download()
         self._merge_file()
         if self._convert_to_mp4():
             shutil.rmtree(self.output_dir)
@@ -141,7 +130,17 @@ class Downloader:
         response = requests.get(url=m3u8_url, headers=headers, timeout=6, verify=False)
         return response.text
 
-    def _download(self, ts_urls):
+    def _build_download_request(self, index, url):
+        def hook_factory(*factory_args, **factory_kwargs):
+            def response_hook(response, *request_args, **request_kwargs):
+                response.index = factory_kwargs.get('index')
+                return response
+            return response_hook
+        req = grequests.get(url, timeout=10, callback=hook_factory(index=index), verify=False)
+        req.index = index
+        return req
+
+    def _download(self):
         # 如果有加密，先下载首个片段的key
         seg = self.m3u8_obj.segments[0]
         if hasattr(seg.key, 'uri') and seg.key.uri:
@@ -149,31 +148,39 @@ class Downloader:
                 print('m3u8片段已加密，需要安装openssl以支持解密')
                 sys.exit()
             self._get_key_content(seg)
+        
+        # 统计下载成功的片段
+        self.succed = {}
+        for index, seg in enumerate(self.m3u8_obj.segments):
+            ts_path = os.path.join(self.output_dir, self._get_md5(seg.uri))
+            if os.path.isfile(ts_path):
+                self.succed[index] = ts_path
 
-        reqs = (grequests.get(url, timeout=5, verify=False) for url in ts_urls)
-        for response in grequests.imap(reqs, size=self.pool_size, exception_handler=self.exception_handler):
-            self.response_handler(response)
-
-        if self.failed:
-            if self.retries >= self.max_retries:
-                print(f'\n经过{self.retries}次尝试，还有{len(self.failed)}个片段下载失败')
-                return
-            self.retries += 1
-            print(f'\n有{len(self.failed)}个片段下载失败，3秒后尝试第{self.retries}次重新下载..')
-            ts_urls = self.failed
-            self.failed = []
-            time.sleep(3)
-            self._download(ts_urls)
-        print('')
-
+        while len(self.succed) < len(self.m3u8_obj.segments):
+            tasks = []
+            for index, seg in enumerate(self.m3u8_obj.segments):
+                if not self.succed.get(index):
+                    tasks.append((index, seg.uri))
+            reqs = (self._build_download_request(item[0], item[1]) for item in tasks)
+            for response in grequests.imap(reqs, size=self.pool_size, exception_handler=self.exception_handler):
+                self.response_handler(response)
+            
+            failed_count = len(self.m3u8_obj.segments) - len(self.succed)
+            if failed_count > 0:
+                if self.retries >= max(1, self.max_retries):
+                    print(f'\n经过{self.retries}次尝试，还有{failed_count}个片段下载失败')
+                    break
+                self.retries += 1
+                print(f'\n有{failed_count}个片段下载失败，3秒后尝试第{self.retries}次重新下载..')
+                time.sleep(3)
+    
     def exception_handler(self, request, exception):
         print(f'\n请求失败: {request.url}  {str(exception)}')
-        self.failed.append(request.url)
 
     def response_handler(self, r, *args, **kwargs):
         # 处理重定向导致url变化的情况
         url = r.history[0].url if r.history else r.url
-        index = self.tsurl_list.index(url)
+        index = r.index
         if r.ok:
             seg = self.m3u8_obj.segments[index]
             file_path = os.path.join(self.output_dir, self._get_md5(url))
@@ -204,7 +211,6 @@ class Downloader:
             sys.stdout.flush()
         else:
             print(f"\n下载失败: {url}")
-            self.failed.append(url)
 
     def _get_key_content(self, seg):
         key_uri = seg.key.uri
