@@ -1,4 +1,3 @@
-grequests
-requests
-m3u8
-chardet
+requests==2.25.1
+grequests==0.6.0
+m3u8==0.8.0
