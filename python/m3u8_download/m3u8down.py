@@ -25,7 +25,6 @@ class Downloader:
         self.max_retries = max_retries
         self.retries = 0
         self.m3u8_obj = None
-        self.tsurl_list = []
         self.ts_total = 0
         self.output_mp4 = ""
         self.output_dir = ""
@@ -294,7 +293,6 @@ class Downloader:
 
 
 if __name__ == '__main__':
-    # print(sys.argv)
     m3u8_url = sys.argv[1] if len(sys.argv) > 1 else input("请输入m3u8 url：")
     output_filepath = sys.argv[2] if len(sys.argv) > 2 else input("请输入保存的路径： ")
     if not m3u8_url.strip():
