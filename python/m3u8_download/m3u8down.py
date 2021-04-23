@@ -297,13 +297,13 @@ if __name__ == '__main__':
     output_filepath = sys.argv[2] if len(sys.argv) > 2 else input("请输入保存的路径： ")
     if not m3u8_url.strip():
         print('❌m3u8_url不能为空')
-        print('格式：./m3u8-down.py [m3u8_url] [output_video]')
-        print('示例：./m3u8-down.py http://example.com/exp.m3u8 OUTPUT.mp4')
+        print('格式：./m3u8down.py [m3u8_url] [output_video]')
+        print('示例：./m3u8down.py http://example.com/exp.m3u8 OUTPUT.mp4')
         sys.exit()
     if not output_filepath.strip():
         print('❌output_video不能为空')
-        print('格式：./m3u8-down.py [m3u8_url] [output_video]')
-        print('示例：./m3u8-down.py http://example.com/exp.m3u8 OUTPUT.mp4')
+        print('格式：./m3u8down.py [m3u8_url] [output_video]')
+        print('示例：./m3u8down.py http://example.com/exp.m3u8 OUTPUT.mp4')
         sys.exit()
     downloader = Downloader(20)
     print('下载 ' + m3u8_url)
