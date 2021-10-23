@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 #coding: utf-8
 
+import argparse
 import hashlib
 import math
 import os
@@ -14,17 +15,18 @@ import m3u8
 import requests
 import urllib3
 
-
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 class Downloader:
-    def __init__(self, pool_size, max_retries=3):
+    def __init__(self, pool_size=10, header=[], max_retries=3):
         self.pool_size = pool_size
+        self.header = header
         self.session = self._get_http_session(pool_size, pool_size, max_retries)
         self.max_retries = max_retries
         self.retries = 0
         self.m3u8_obj = None
+        self.tsurl_list = []
         self.ts_total = 0
         self.output_mp4 = ""
         self.output_dir = ""
@@ -123,9 +125,11 @@ class Downloader:
         ref = result.group(1) if result else ''
         # 请求头User-Agent设置成移动端， Referer设置成和m3u8_url域名一样以绕过一般的网站限制
         headers = {
-            'User-Agent': 'AppleCoreMedia/1.0.0.17D50 (iPhone; U; CPU OS 13_3_1 like Mac OS X; en_us)',
-            'Referer': ref
+            'user-agent': 'AppleCoreMedia/1.0.0.17D50 (iPhone; U; CPU OS 13_3_1 like Mac OS X; en_us)',
+            'referer': ref
         }
+        headers.update(self.header)
+        print(headers)
         response = requests.get(url=m3u8_url, headers=headers, timeout=6, verify=False)
         return response.text
 
@@ -135,7 +139,8 @@ class Downloader:
                 response.index = factory_kwargs.get('index')
                 return response
             return response_hook
-        req = grequests.get(url, timeout=10, callback=hook_factory(index=index), verify=False)
+        
+        req = grequests.get(url, timeout=10, callback=hook_factory(index=index), headers=self.header, verify=False)
         req.index = index
         return req
 
@@ -293,18 +298,23 @@ class Downloader:
 
 
 if __name__ == '__main__':
-    m3u8_url = sys.argv[1] if len(sys.argv) > 1 else input("请输入m3u8 url：")
-    output_filepath = sys.argv[2] if len(sys.argv) > 2 else input("请输入保存的路径： ")
-    if not m3u8_url.strip():
-        print('❌m3u8_url不能为空')
-        print('格式：./m3u8down.py [m3u8_url] [output_video]')
-        print('示例：./m3u8down.py http://example.com/exp.m3u8 OUTPUT.mp4')
-        sys.exit()
-    if not output_filepath.strip():
-        print('❌output_video不能为空')
-        print('格式：./m3u8down.py [m3u8_url] [output_video]')
-        print('示例：./m3u8down.py http://example.com/exp.m3u8 OUTPUT.mp4')
-        sys.exit()
-    downloader = Downloader(20)
-    print('下载 ' + m3u8_url)
-    downloader.run(m3u8_url, output_filepath)
+    parser = argparse.ArgumentParser(description='可用参数如下：')
+    parser.add_argument('input', metavar='input', nargs=1, help='url或文件路径')
+    parser.add_argument('output', metavar='output', nargs=1, help='输出文件的路径')
+    parser.add_argument('--header', action='append', help='请求头。例如："pragma: no-cache"')
+    args = parser.parse_args()
+    input_url = args.input[0]
+    output = args.output[0]
+    header = args.header if args.header else []
+
+    header_map = {}
+    for item in header:
+        part = item.split(':', 1)
+        if len(part) == 2:
+            name = part[0].strip().lower()
+            value = part[1].strip()
+            header_map[name] = value
+
+    downloader = Downloader(pool_size=20, header=header_map)
+    print('下载 ' + input_url)
+    downloader.run(input_url, output)
