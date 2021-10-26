@@ -129,7 +129,6 @@ class Downloader:
             'referer': ref
         }
         headers.update(self.header)
-        print(headers)
         response = requests.get(url=m3u8_url, headers=headers, timeout=6, verify=False)
         return response.text
 
@@ -309,8 +308,8 @@ if __name__ == '__main__':
 
     header_map = {}
     for item in header:
-        part = item.split(':', 1)
-        if len(part) == 2:
+        if ':' in item:
+            part = item.split(':', 1)
             name = part[0].strip().lower()
             value = part[1].strip()
             header_map[name] = value
