@@ -260,14 +260,17 @@ class Downloader:
             if b_list[start_index] == SYNC_BYTE and b_list[end_index] == SYNC_BYTE:
                 if left == -1:
                     left = start_index
+                right = end_index
                 start_index += MP2T_PACKET_LENGTH
                 end_index += MP2T_PACKET_LENGTH
-                right = end_index if end_index <= len(b_list) else start_index
                 continue
             start_index += 1
             end_index += 1
         if left == -1:
             raise Exception(f'非法的TS文件\n')
+        # 如果最后一个package是完整的 要加上它的长度
+        if right + MP2T_PACKET_LENGTH <= len(b_list):
+            right += MP2T_PACKET_LENGTH
         tmp_filepath = f'{ts_path}.tmp'
         with open(tmp_filepath, 'wb') as fp:
             fp.write(data[left:right])
