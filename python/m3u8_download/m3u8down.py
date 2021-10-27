@@ -9,7 +9,7 @@ import re
 import shutil
 import sys
 import time
-
+from urllib import parse
 import grequests
 import m3u8
 import requests
@@ -107,7 +107,7 @@ class Downloader:
         if os.path.isdir(dst_filepath):
             raise Exception(f'❌错误：无法写入\'{dst_filepath}\'，因为它是目录')
         if not os.path.isdir(os.path.dirname(dst_filepath)):
-            os.makedirs(os.path.dirname(dst_filepath))    
+            os.makedirs(os.path.dirname(dst_filepath))   
         self.output_mp4 = os.path.realpath(dst_filepath)
         self.output_dir = os.path.join(os.path.dirname(self.output_mp4), self._get_md5(m3u8_content))
         if not os.path.isdir(self.output_dir):
@@ -215,7 +215,7 @@ class Downloader:
             print(f"\n下载失败: {url}")
 
     def _get_key_content(self, seg):
-        key_uri = seg.key.uri
+        key_uri = parse.urljoin(self.m3u8_obj.base_uri, seg.key.uri)
         key_content = self.key_map.get(key_uri)
         if not key_content:
             resp = self.session.get(key_uri, timeout=10, verify=False)
