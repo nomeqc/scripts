@@ -14,6 +14,7 @@ import grequests
 import m3u8
 import requests
 import urllib3
+from Crypto.Cipher import AES
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -78,12 +79,12 @@ class Downloader:
             num += 1
         return unique_path
 
-    def run(self, m3u8_url="", dest_filepath=""):
+    def run(self, m3u8_url="", dst_filepath=""):
         if not m3u8_url:
             print('m3u8_url不能为空')
             sys.exit()
-        if not dest_filepath:
-            print('dest_filepath不能为空')
+        if not dst_filepath:
+            print('dst_filepath不能为空')
             sys.exit()
         if m3u8_url.startswith('http://') or m3u8_url.startswith('https://'):
             m3u8_content = self._get_m3u8_content(m3u8_url)
@@ -103,11 +104,11 @@ class Downloader:
         if self.ts_total == 0:
             print('没有任何片段')
             sys.exit()
-        if os.path.isdir(dest_filepath):
-            raise Exception(f'❌错误：无法写入\'{dest_filepath}\'，因为它是目录')
-        if not os.path.isdir(os.path.dirname(dest_filepath)):
-            os.makedirs(os.path.dirname(dest_filepath))    
-        self.output_mp4 = os.path.realpath(dest_filepath)
+        if os.path.isdir(dst_filepath):
+            raise Exception(f'❌错误：无法写入\'{dst_filepath}\'，因为它是目录')
+        if not os.path.isdir(os.path.dirname(dst_filepath)):
+            os.makedirs(os.path.dirname(dst_filepath))    
+        self.output_mp4 = os.path.realpath(dst_filepath)
         self.output_dir = os.path.join(os.path.dirname(self.output_mp4), self._get_md5(m3u8_content))
         if not os.path.isdir(self.output_dir):
             if os.path.isfile(self.output_dir):
@@ -147,9 +148,6 @@ class Downloader:
         # 如果有加密，先下载首个片段的key
         seg = self.m3u8_obj.segments[0]
         if hasattr(seg.key, 'uri') and seg.key.uri:
-            if self._runcmd('openssl version')[-1] > 0:
-                print('m3u8片段已加密，需要安装openssl以支持解密')
-                sys.exit()
             self._get_key_content(seg)
         
         # 统计下载成功的片段
@@ -195,6 +193,7 @@ class Downloader:
                     iv = '{:032x}'.format(int(str(seg.key.iv), 16))
                 else:
                     iv = '{:032x}'.format(int(str(index), 16))
+                iv = bytes.fromhex(iv)
                 key_content = self._get_key_content(seg)
                 self._decrypt(file_path, file_path + '.dec', iv, key_content)
                 os.remove(file_path)
@@ -217,19 +216,31 @@ class Downloader:
 
     def _get_key_content(self, seg):
         key_uri = seg.key.uri
-        key_content = self.key_map.get(key_uri, '')
+        key_content = self.key_map.get(key_uri)
         if not key_content:
-            resp = self.session.get(key_uri, timeout=5, verify=False)
-            key_content = resp.content.hex()
-            self.key_map[key_uri] = key_content
+            resp = self.session.get(key_uri, timeout=10, verify=False)
+            if resp.ok:
+                key_content = resp.content
+                self.key_map[key_uri] = key_content
+            else:
+                print(f'无法下载key：{key_uri}')
+                sys.exit()
         return key_content
 
-    def _decrypt(self, infile, outfile, iv, key):
-        cmd = f'openssl aes-128-cbc -d -in "{infile}" -out "{outfile}" -nosalt -iv {iv} -K {key}'
-        output, returncode = self._runcmd(cmd)
-        if returncode != 0:
-            print(f'❌解密失败：{output}')
-            sys.exit()
+    def _decrypt(self, in_filepath, out_filepath, iv, key):
+        chunk_size = 24 * 1024
+        with open(in_filepath, 'rb') as infile:
+            decryptor = AES.new(key, AES.MODE_CBC, iv)
+            with open(out_filepath, 'wb') as outfile:
+                while True:
+                    chunk = infile.read(chunk_size)
+                    if len(chunk) == 0:
+                        break
+                    try:
+                        outfile.write(decryptor.decrypt(chunk))
+                    except Exception as e:
+                        print(f'❌解密失败：{str(e)}')
+                        sys.exit()
 
     def _merge_file(self):
         self.output_ts = os.path.join(self.output_dir, os.path.splitext(os.path.basename(self.output_mp4))[0] + '.ts')
@@ -317,6 +328,6 @@ if __name__ == '__main__':
             value = part[1].strip()
             header_map[name] = value
 
-    downloader = Downloader(pool_size=20, header=header_map)
+    downloader = Downloader(pool_size=10, header=header_map)
     print('下载 ' + input_url)
     downloader.run(input_url, output)
