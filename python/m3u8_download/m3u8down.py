@@ -28,10 +28,9 @@ class Downloader:
         self.max_retries = max_retries
         self.retries = 0
         self.m3u8_obj = None
-        self.tsurl_list = []
         self.ts_total = 0
-        self.output_mp4 = ""
-        self.output_dir = ""
+        self.output_dir = ''
+        self.output_mp4 = ''
         self.output_ts = ''
         self.key_map = {}
         self.succed = {}
@@ -108,7 +107,7 @@ class Downloader:
         if os.path.isdir(dst_filepath):
             raise Exception(f'❌错误：无法写入\'{dst_filepath}\'，因为它是目录')
         if not os.path.isdir(os.path.dirname(dst_filepath)):
-            os.makedirs(os.path.dirname(dst_filepath))   
+            os.makedirs(os.path.dirname(dst_filepath))
         self.output_mp4 = os.path.realpath(dst_filepath)
         self.output_dir = os.path.join(os.path.dirname(self.output_mp4), self._get_md5(m3u8_content))
         if not os.path.isdir(self.output_dir):
@@ -199,15 +198,13 @@ class Downloader:
                 self._decrypt(file_path, file_path + '.dec', iv, key_content)
                 os.remove(file_path)
                 os.rename(file_path + '.dec', file_path)
-            
+        
             self.extract_valid_data(file_path)
-
             self.succed[index] = file_path
-
             # 更新进度条
-            progress = int(math.floor(len(self.succed) / float(self.ts_total) * 100))
+            progress = math.floor(len(self.succed) / float(self.ts_total) * 100)
             progress_step = 2.5
-            total_step = int(math.ceil(100.0 / progress_step))
+            total_step = math.ceil(100.0 / progress_step)
             current_step = int(total_step * (progress / 100.0))
             s = "\r已下载 %d%% |%s%s| [%d/%d] " % (progress, "█" * current_step, " " * (total_step - current_step), len(self.succed), self.ts_total)
             sys.stdout.write(s)
@@ -290,13 +287,16 @@ class Downloader:
         os.rename(tmp_filepath, ts_path)
 
     def _convert_to_mp4(self):
-        # 退出码不为0 表示"ffmpeg -version"命令执行失败，判断为没有安装ffmpeg
         if self._runcmd('ffmpeg -version')[-1] != 0:
+            print('检测到未安装ffmpeg，将跳过格式转换')
+            return False
+        if self._runcmd('ffprobe -version')[-1] != 0:
+            print('检测到未安装ffprobe，将跳过格式转换')
             return False
         cmd = f'ffprobe "{self.output_ts}"'
         output, returncode = self._runcmd(cmd)
         if returncode != 0:
-            raise Exception(f'检测编码失败\n{output}')
+            raise Exception(f'❌检测编码失败：\n{output}')
         bit_stream_filter = '-bsf:a aac_adtstoasc' if 'Audio: aac' in output else ''
         if not self.output_mp4.endswith('.mp4'):
             self.output_mp4 = self.output_mp4 + '.mp4'
@@ -304,12 +304,11 @@ class Downloader:
         print('\n正在转换成mp4格式...')
         cmd = f'ffmpeg -i "{self.output_ts}" -c copy {bit_stream_filter} "{self.output_mp4}"'
         output, returncode = self._runcmd(cmd)
-        if returncode == 0:
-            return True
-        else:
+        if returncode != 0:
             print(f'❌"{self.output_ts}" 转换成mp4格式失败')
             return False
-
+        return True
+            
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='可用参数如下：')
