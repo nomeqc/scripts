@@ -1,5 +1,5 @@
 m3u8==0.6.0
 grequests==0.6.0
-urllib3==1.25.3
+urllib3==1.26.5
 requests==2.22.0
 pycryptodome==3.11.0
