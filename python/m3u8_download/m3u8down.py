@@ -21,9 +21,9 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 class Downloader:
-    def __init__(self, pool_size=10, header=[], max_retries=3):
+    def __init__(self, pool_size=10, headers=[], max_retries=3):
         self.pool_size = pool_size
-        self.header = header
+        self.headers = headers
         self.session = self._get_http_session(pool_size, pool_size, max_retries)
         self.max_retries = max_retries
         self.retries = 0
@@ -129,7 +129,7 @@ class Downloader:
             'user-agent': 'AppleCoreMedia/1.0.0.17D50 (iPhone; U; CPU OS 13_3_1 like Mac OS X; en_us)',
             'referer': ref
         }
-        headers.update(self.header)
+        headers.update(self.headers)
         response = requests.get(url=m3u8_url, headers=headers, timeout=6, verify=False)
         return response.text
 
@@ -140,7 +140,7 @@ class Downloader:
                 return response
             return response_hook
         
-        req = grequests.get(url, timeout=10, callback=hook_factory(index=index), headers=self.header, verify=False)
+        req = grequests.get(url, timeout=10, callback=hook_factory(index=index), headers=self.headers, verify=False)
         req.index = index
         return req
 
@@ -308,26 +308,31 @@ class Downloader:
             print(f'❌"{self.output_ts}" 转换成mp4格式失败')
             return False
         return True
-            
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='可用参数如下：')
-    parser.add_argument('input', metavar='input', nargs=1, help='url或文件路径')
-    parser.add_argument('output', metavar='output', nargs=1, help='输出文件的路径')
-    parser.add_argument('--header', action='append', help='请求头。例如："pragma: no-cache"')
-    args = parser.parse_args()
-    input_url = args.input[0]
-    output = args.output[0]
-    header = args.header if args.header else []
 
-    header_map = {}
+def parseHeaders(header=[]):
+    headers = {}
     for item in header:
         if ':' in item:
             part = item.split(':', 1)
             name = part[0].strip().lower()
             value = part[1].strip()
-            header_map[name] = value
+            headers[name] = value
+    return headers
 
-    downloader = Downloader(pool_size=10, header=header_map)
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='可用参数如下：')
+    parser.add_argument('input', help='本地文件路径或远程URL')
+    parser.add_argument('output', help='输出文件的路径')
+    parser.add_argument('--header',
+                        action='append',
+                        help='添加请求头。例如：--header="pragma: no-cache"')
+    args = parser.parse_args()
+    input_url = args.input
+    output = args.output
+    header = args.header if args.header else []
+    
+    downloader = Downloader(pool_size=10, headers=parseHeaders(header))
     print('下载 ' + input_url)
     downloader.run(input_url, output)
