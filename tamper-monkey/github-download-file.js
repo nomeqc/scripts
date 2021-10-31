@@ -51,7 +51,7 @@
             let isFile = row.querySelector('svg[aria-label=File]');
             if (isFile) {
                 let href = row.querySelector('div[role=rowheader] > span > a').getAttribute('href');
-                const downloadUrl = "https://cdn.jsdelivr.net/gh" + href.replace(/[/]blob[/][^/]+/, "");
+                const downloadUrl = "https://cdn.jsdelivr.net/gh" + href.replace("/blob/", "@");
                 const rawUrl = "https://raw.githubusercontent.com" + href.replace("/blob", "");
                 const downloadUrlNode = createDownloadNode(downloadUrl);
                 const rawUrlNode = createRawNode(rawUrl);
