@@ -22,10 +22,10 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 class Downloader:
     def __init__(self, pool_size=10, headers=[], max_retries=3):
-        self.pool_size = pool_size
+        self.pool_size = max(1, pool_size)
         self.headers = headers
-        self.session = self._get_http_session(pool_size, pool_size, max_retries)
-        self.max_retries = max_retries
+        self.max_retries = max(0, max_retries)
+        self.session = self._get_http_session(self.pool_size, self.pool_size, self.max_retries)
         self.retries = 0
         self.m3u8_obj = None
         self.ts_total = 0
@@ -134,10 +134,10 @@ class Downloader:
             'referer': ref
         }
         headers.update(self.headers)
-        response = requests.get(url=m3u8_url,
-                                headers=headers,
-                                timeout=6,
-                                verify=False)
+        response = self.session.get(url=m3u8_url,
+                                    headers=headers,
+                                    timeout=6,
+                                    verify=False)
         return response.text
 
     def _build_download_request(self, index, url):
@@ -151,7 +151,8 @@ class Downloader:
                             timeout=10,
                             callback=hook_factory(index=index),
                             headers=self.headers,
-                            verify=False)
+                            verify=False,
+                            session=self.session)
         req.index = index
         return req
 
@@ -183,12 +184,17 @@ class Downloader:
 
             failed_count = len(self.m3u8_obj.segments) - len(self.succed)
             if failed_count > 0:
-                if self.retries >= max(1, self.max_retries):
-                    print(f'\n经过{self.retries}次尝试，还有{failed_count}个片段下载失败')
+                if self.retries >= self.max_retries:
+                    if self.retries > 0:
+                        print(f'\n经过{self.retries}次尝试，还有{failed_count}个片段下载失败')
+                    else:
+                        print(f'\n还有{failed_count}个片段下载失败')
                     break
                 self.retries += 1
                 print(f'\n有{failed_count}个片段下载失败，3秒后尝试第{self.retries}次重新下载..')
                 time.sleep(3)
+            else:
+                print('')
 
     def exception_handler(self, request, exception):
         print(f'\n请求失败: {request.url}  {str(exception)}')
@@ -265,7 +271,7 @@ class Downloader:
                 with open(infile_path, 'rb') as infile:
                     outfile.write(infile.read())
                 os.remove(infile_path)
-                s = f"\r视频合并中 [{i+1}/{len(self.succed)}] "
+                s = f"\r合并视频片段 [{i+1}/{len(self.succed)}] "
                 sys.stdout.write(s)
                 sys.stdout.flush()
 
