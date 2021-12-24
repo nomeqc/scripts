@@ -229,7 +229,7 @@ class Downloader:
             total_step = math.ceil(100.0 / progress_step)
             current_step = int(total_step * (progress / 100.0))
             s = "\r已下载 %d%% |%s%s| [%d/%d] " % (
-                progress, "█" * current_step, " " *
+                progress, "█" * current_step, "　" *
                 (total_step - current_step), len(self.succed), self.ts_total)
             sys.stdout.write(s)
             sys.stdout.flush()
@@ -280,36 +280,35 @@ class Downloader:
     '''
 
     def extract_valid_data(self, ts_path):
-        with open(ts_path, "rb") as f:
-            data = f.read()
-        b_list = list(data)
-        MP2T_PACKET_LENGTH = 188
-        SYNC_BYTE = 0x47
-        start_index = 0
-        end_index = MP2T_PACKET_LENGTH
-        left = -1
-        right = -1
-        while end_index < len(b_list):
-            if b_list[start_index] == SYNC_BYTE and b_list[
-                    end_index] == SYNC_BYTE:
-                if left == -1:
-                    left = start_index
-                right = end_index
-                start_index += MP2T_PACKET_LENGTH
-                end_index += MP2T_PACKET_LENGTH
-                continue
-            start_index += 1
-            end_index += 1
-        if left == -1:
-            raise Exception(f'非法的TS文件\n')
-        # 如果最后一个package是完整的 要加上它的长度
-        if right + MP2T_PACKET_LENGTH <= len(b_list):
-            right += MP2T_PACKET_LENGTH
-        tmp_filepath = f'{ts_path}.tmp'
-        with open(tmp_filepath, 'wb') as fp:
+        with open(ts_path, "r+b") as fp:
+            data = fp.read()
+            b_list = list(data)
+            MP2T_PACKET_LENGTH = 188
+            SYNC_BYTE = 0x47
+            start_index = 0
+            end_index = MP2T_PACKET_LENGTH
+            left = -1
+            right = -1
+            while end_index < len(b_list):
+                if b_list[start_index] == SYNC_BYTE and b_list[
+                        end_index] == SYNC_BYTE:
+                    if left == -1:
+                        left = start_index
+                    right = end_index
+                    start_index += MP2T_PACKET_LENGTH
+                    end_index += MP2T_PACKET_LENGTH
+                    continue
+                start_index += 1
+                end_index += 1
+            if left == -1:
+                raise Exception(f'非法的TS文件\n')
+            # 如果最后一个package是完整的 要加上它的长度
+            if right + MP2T_PACKET_LENGTH <= len(b_list):
+                right += MP2T_PACKET_LENGTH
+            fp.truncate(0)
+            fp.seek(0)
             fp.write(data[left:right])
-        os.remove(ts_path)
-        os.rename(tmp_filepath, ts_path)
+
 
     def _convert_to_mp4(self):
         if self._runcmd('ffmpeg -version')[-1] != 0:
