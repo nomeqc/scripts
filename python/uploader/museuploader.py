@@ -165,8 +165,8 @@ class MuseUploader():
                 for chunk in iter(lambda: fp.read(trunk_size), b''):
                     i += 1
                     self.upload_part(chunk, i)
-                sys.stdout.write('\r已上传分片：{}/{}'.format(i, n))
-                sys.stdout.flush()
+                    sys.stdout.write('\r已上传分片：{}/{}  '.format(i, n))
+                    sys.stdout.flush()
             print('')
             if self.debug:
                 print(self.multipart_upload_record)
@@ -425,6 +425,6 @@ def upload(filepath='', debug=False):
 
 
 if __name__ == '__main__':
-    filepath = r'E:\360MoveData\Users\fallrainy\Pictures\风景\pexels-photo-3388335.jpeg'
-    code = upload(filepath=filepath, debug=True)
+    filepath = r'F:\Developer\Python\Test\a_cake\tts\parse\my_work (11)\output.mp4'
+    code = upload(filepath=filepath, debug=False)
     print(f'上传成功！文件下载地址：https://musetransfer.com/s/{code}')
