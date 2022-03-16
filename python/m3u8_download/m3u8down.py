@@ -73,11 +73,14 @@ def runcmd(cmd, shell=False):
 
 class Downloader:
 
-    def __init__(self, pool_size=10, headers={}, max_retries=3):
+    def __init__(self, pool_size=10, headers={}, max_retries=3, proxy=None):
         self.pool_size = max(1, pool_size)
         self.headers = headers
         self.max_retries = max(0, max_retries)
         self.retries = 0
+        if proxy and not proxy.startswith('http://') and not proxy.startswith('https://'):
+            proxy = f'http://{proxy}'
+        self.proxy = proxy
         self.m3u8_obj = None
         self.ts_total = 0
         self.m3u8_url = ''
@@ -112,7 +115,7 @@ class Downloader:
             'referer': referer
         }
         headers.update(self.headers)
-        async with self.session.get(url, headers=headers) as resp:
+        async with self.session.get(url, headers=headers, proxy=self.proxy) as resp:
             text = await resp.text()
             self.m3u8_md5 = calculate_md5(text)
             self.m3u8_obj = m3u8.loads(text)
@@ -167,7 +170,7 @@ class Downloader:
             data = Path(url).read_bytes()
         else:
             try:
-                async with self.session.get(url, headers=self.headers) as resp:
+                async with self.session.get(url, headers=self.headers, proxy=self.proxy) as resp:
                     if resp.ok:
                         data = await resp.read()
                     else:
@@ -322,7 +325,6 @@ class Downloader:
 
         loop = asyncio.get_event_loop()
         loop.run_until_complete(loop.create_task(self.main()))
-        loop.close()
 
 
 def parse_headers(header=[]):
@@ -341,12 +343,14 @@ def parse_inputs():
     parser.add_argument('input', help='本地文件路径或远程URL')
     parser.add_argument('output', help='输出文件的路径')
     parser.add_argument('--header', action='append', help='添加请求头。例如：--header="pragma: no-cache"')
+    parser.add_argument('-x', '--proxy', help='设置代理。例如：-x 127.0.0.1:8888 或 --proxy 127.0.0.1:8888')
     args = parser.parse_args()
+
     input_url = args.input
     output = args.output
     header = args.header if args.header else []
-
-    downloader = Downloader(pool_size=10, headers=parse_headers(header))
+    proxy = args.proxy
+    downloader = Downloader(pool_size=10, headers=parse_headers(header), proxy=proxy)
     print('下载 ' + input_url)
     downloader.run(input_url, output)
 
