@@ -10,7 +10,6 @@ import os
 import re
 import shutil
 import sys
-import time
 from pathlib import Path
 from urllib import parse
 
@@ -207,7 +206,7 @@ class Downloader:
                     break
                 self.retries += 1
                 print(f'\n有{failed_count}个片段下载失败，3秒后开始第{self.retries}次重试..')
-                time.sleep(3)
+                await asyncio.sleep(3)
             else:
                 print('')
 
