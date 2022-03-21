@@ -185,27 +185,28 @@ class Downloader:
             ts_path = os.path.join(self.output_dir, calculate_md5(seg.uri))
             if os.path.isfile(ts_path):
                 self.succed[index] = ts_path
-        if len(self.succed) == len(self.m3u8_obj.segments):
+        pending = len(self.m3u8_obj.segments) - len(self.succed)
+        if pending == 0:
             return
         first_segment = self.m3u8_obj.segments[0]
         if hasattr(first_segment.key, 'uri') and first_segment.key.uri:
             await self._fetch_key(first_segment.key.uri)
-        while len(self.succed) < len(self.m3u8_obj.segments):
+        while pending > 0:
             tasks = []
             for index, seg in enumerate(self.m3u8_obj.segments):
                 if not self.succed.get(index):
                     tasks.append(asyncio.create_task(self._fetch_segment(seg, index)))
             await asyncio.wait(tasks)
-            failed_count = len(self.m3u8_obj.segments) - len(self.succed)
-            if failed_count > 0:
+            pending = len(self.m3u8_obj.segments) - len(self.succed)
+            if pending > 0:
                 if self.retries >= self.max_retries:
                     if self.retries > 0:
-                        print(f'\n经过{self.retries}次尝试，还有{failed_count}个片段下载失败')
+                        print(f'\n经过{self.retries}次尝试，还有{pending}个片段下载失败')
                     else:
-                        print(f'\n还有{failed_count}个片段下载失败')
+                        print(f'\n还有{pending}个片段下载失败')
                     break
                 self.retries += 1
-                print(f'\n有{failed_count}个片段下载失败，3秒后开始第{self.retries}次重试..')
+                print(f'\n有{pending}个片段下载失败，3秒后开始第{self.retries}次重试..')
                 await asyncio.sleep(3)
             else:
                 print('')
@@ -222,7 +223,7 @@ class Downloader:
                         print(f'❌解密失败：{str(e)}')
                         sys.exit()
 
-    def _merge_file(self):
+    def _merge_segments(self):
         self.output_ts = os.path.join(self.output_dir, os.path.splitext(os.path.basename(self.output_mp4))[0] + '.ts')
         with open(self.output_ts, 'wb') as outfile:
             for i in list(range(self.ts_total)):
@@ -258,8 +259,8 @@ class Downloader:
                 start_index += 1
                 end_index += 1
             if left == -1:
-                raise Exception(f'非法的TS文件\n')
-            # 如果最后一个package是完整的 要加上它的长度
+                raise Exception(f'发生错误！非法的TS文件：{ts_path}\n')
+            # 加上最后一个package的长度
             if right + MP2T_PACKET_LENGTH <= len(b_list):
                 right += MP2T_PACKET_LENGTH
             fp.truncate(0)
@@ -301,13 +302,13 @@ class Downloader:
 
             self.output_dir = os.path.join(os.path.dirname(self.output_mp4), self.m3u8_md5)
             if not Path(self.output_dir).exists():
-                Path(self.output_dir).mkdir()
+                Path(self.output_dir).mkdir(parents=True)
             elif Path(self.output_dir).is_file():
                 output_dir_path = Path(ensure_path_unique(self.output_dir, isfile=False))
                 output_dir_path.mkdir()
                 self.output_dir = str(output_dir_path)
             await self._download_segments()
-        self._merge_file()
+        self._merge_segments()
         if self._convert_to_mp4():
             shutil.rmtree(self.output_dir)
         print('已保存到：{}\n'.format(self.output_mp4))
@@ -321,9 +322,7 @@ class Downloader:
             sys.exit()
         self.m3u8_url = m3u8_url
         self.output_mp4 = os.path.realpath(output_file)
-
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(loop.create_task(self.main()))
+        asyncio.run(self.main())
 
 
 def parse_headers(header=[]):
