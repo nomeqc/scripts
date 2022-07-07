@@ -17,16 +17,19 @@ import aiohttp
 import m3u8
 from Crypto.Cipher import AES
 
+# See: https://github.com/encode/httpx/issues/914#issuecomment-622586610
+if sys.version_info[0] == 3 and sys.version_info[1] >= 8 and sys.platform.startswith('win'):
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 
 def read_file(filepath):
     codecs = ['utf-8', locale.getpreferredencoding(False)]
     for i, codec in enumerate(codecs):
         try:
-            text = Path(filepath).read_text(encoding=codec)
+            return Path(filepath).read_text(encoding=codec)
         except UnicodeDecodeError:
             if i == len(codecs) - 1:
-                print(f'文件：\'{filepath}\' 解码失败。只支持文件编码：{"、".join(codecs)}')
-    return text
+                raise Exception(f'文件：\'{filepath}\' 解码失败。只支持文件编码：{"、".join(codecs)}')
 
 
 def calculate_md5(s):
@@ -131,7 +134,7 @@ class Downloader:
                     self.key_map[key_uri] = key_content
                 else:
                     print(f'无法下载key：{key_uri}')
-                    sys.exit()
+                    sys.exit(1)
         return key_content
 
     async def _fetch_segment(self, seg, index):
@@ -164,7 +167,7 @@ class Downloader:
             )
             sys.stdout.write(s)
             sys.stdout.flush()
-
+        data = None
         if not url.startswith('http://') and not url.startswith('https://'):
             data = Path(url).read_bytes()
         else:
@@ -176,7 +179,8 @@ class Downloader:
                         print(f"\n下载失败: {url}")
             except Exception as e:
                 print(f'\'{url}\'下载失败。错误：{e}')
-        await process(data)
+        if data:
+            await process(data)
 
     async def _download_segments(self):
         # 统计下载成功的片段
@@ -221,7 +225,7 @@ class Downloader:
                         outfile.write(cipher.decrypt(chunk))
                     except Exception as e:
                         print(f'❌解密失败：{str(e)}')
-                        sys.exit()
+                        sys.exit(1)
 
     def _merge_segments(self):
         self.output_ts = os.path.join(self.output_dir, os.path.splitext(os.path.basename(self.output_mp4))[0] + '.ts')
@@ -298,7 +302,7 @@ class Downloader:
             await self.load_m3u8(self.m3u8_url)
             if self.ts_total == 0:
                 print('没有任何片段')
-                sys.exit()
+                sys.exit(1)
 
             self.output_dir = os.path.join(os.path.dirname(self.output_mp4), self.m3u8_md5)
             if not Path(self.output_dir).exists():
@@ -316,10 +320,10 @@ class Downloader:
     def run(self, m3u8_url="", output_file=""):
         if not m3u8_url:
             print('m3u8_url不能为空')
-            sys.exit()
+            sys.exit(1)
         if not output_file:
             print('output_file不能为空')
-            sys.exit()
+            sys.exit(1)
         self.m3u8_url = m3u8_url
         self.output_mp4 = os.path.realpath(output_file)
         asyncio.run(self.main())
