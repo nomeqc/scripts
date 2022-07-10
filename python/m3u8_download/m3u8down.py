@@ -75,7 +75,7 @@ def runcmd(cmd, shell=False):
 
 class Downloader:
 
-    def __init__(self, pool_size=10, headers={}, max_retries=3, proxy=None):
+    def __init__(self, pool_size=10, headers={}, max_retries=3, proxy=None, concurrency: int = 1):
         self.pool_size = max(1, pool_size)
         self.headers = headers
         self.max_retries = max(0, max_retries)
@@ -83,6 +83,7 @@ class Downloader:
         if proxy and not proxy.startswith('http://') and not proxy.startswith('https://'):
             proxy = f'http://{proxy}'
         self.proxy = proxy
+        self.concurrency = concurrency
         self.m3u8_obj = None
         self.ts_total = 0
         self.m3u8_url = ''
@@ -91,6 +92,14 @@ class Downloader:
         self.output_ts = ''
         self.key_map = {}
         self.succed = {}
+
+    def _build_headers(self, url: str):
+        headers = {}
+        if 'referer' not in self.session.headers:
+            result = re.search(r'(https?://[^/\n\s]+)', url)
+            referer = result.group(1) if result else ''
+            headers.update({'referer': referer})
+        return headers
 
     async def load_m3u8(self, url):
 
@@ -109,15 +118,8 @@ class Downloader:
             self.ts_total = len(self.m3u8_obj.segments)
             resove(self.m3u8_obj)
             return
-        result = re.search(r'(https?://[^/\n\s]+)', url)
-        referer = result.group(1) if result else ''
-        # 请求头User-Agent设置成移动端， Referer设置成和m3u8_url域名一样以绕过一般的网站限制
-        headers = {
-            'user-agent': 'AppleCoreMedia/1.0.0.17D50 (iPhone; U; CPU OS 13_3_1 like Mac OS X; en_us)',
-            'referer': referer
-        }
-        headers.update(self.headers)
-        async with self.session.get(url, headers=headers, proxy=self.proxy) as resp:
+
+        async with self.session.get(url, headers=self._build_headers(url), proxy=self.proxy) as resp:
             text = await resp.text()
             self.m3u8_md5 = calculate_md5(text)
             self.m3u8_obj = m3u8.loads(text)
@@ -128,7 +130,7 @@ class Downloader:
         key_uri = parse.urljoin(self.m3u8_obj.base_uri, key_uri)
         key_content = self.key_map.get(key_uri)
         if not key_content:
-            async with self.session.get(key_uri) as resp:
+            async with self.session.get(key_uri, headers=self._build_headers(key_uri)) as resp:
                 if resp.ok:
                     key_content = await resp.read()
                     self.key_map[key_uri] = key_content
@@ -162,25 +164,25 @@ class Downloader:
             progress_step = 2.5
             total_step = math.ceil(100.0 / progress_step)
             current_step = int(total_step * (progress / 100.0))
-            s = "\r已下载 %d%% |%s%s| [%d/%d] " % (
-                progress, "█" * current_step, " " * (total_step - current_step), len(self.succed), self.ts_total
-            )
+            s = "\r已下载 %d%% |%s%s| [%d/%d] " % (progress, "█" * current_step, " " * (total_step - current_step), len(self.succed), self.ts_total)
             sys.stdout.write(s)
             sys.stdout.flush()
+
         data = None
-        if not url.startswith('http://') and not url.startswith('https://'):
-            data = Path(url).read_bytes()
-        else:
-            try:
-                async with self.session.get(url, headers=self.headers, proxy=self.proxy) as resp:
-                    if resp.ok:
-                        data = await resp.read()
-                    else:
-                        print(f"\n下载失败: {url}")
-            except Exception as e:
-                print(f'\'{url}\'下载失败。错误：{e}')
-        if data:
-            await process(data)
+        async with self.lock:
+            if not url.startswith('http://') and not url.startswith('https://'):
+                data = Path(url).read_bytes()
+            else:
+                try:
+                    async with self.session.get(url, headers=self._build_headers(url), proxy=self.proxy) as resp:
+                        if resp.ok:
+                            data = await resp.read()
+                        else:
+                            print(f"\n下载失败: {url}")
+                except Exception as e:
+                    print(f'\'{url}\'下载失败。错误：{e}')
+            if data:
+                await process(data)
 
     async def _download_segments(self):
         # 统计下载成功的片段
@@ -295,10 +297,15 @@ class Downloader:
         return True
 
     async def main(self):
+        self.lock = asyncio.Semaphore(self.concurrency)
         conn = aiohttp.TCPConnector(limit=self.pool_size)
-        timeout = aiohttp.ClientTimeout(total=None, connect=None, sock_connect=15, sock_read=15)
+        timeout = aiohttp.ClientTimeout(total=None, connect=None, sock_connect=20, sock_read=20)
         async with aiohttp.ClientSession(connector=conn, timeout=timeout) as session:
             self.session = session
+            # 默认设置为移动端User-Agent
+            self.session.headers.update({'user-agent': 'AppleCoreMedia/1.0.0.17D50 (iPhone; U; CPU OS 13_3_1 like Mac OS X; en_us)'})
+            if self.headers:
+                self.session.headers.update(self.headers)
             await self.load_m3u8(self.m3u8_url)
             if self.ts_total == 0:
                 print('没有任何片段')
@@ -346,13 +353,14 @@ def parse_inputs():
     parser.add_argument('output', help='输出文件的路径')
     parser.add_argument('--header', action='append', help='添加请求头。例如：--header="pragma: no-cache"')
     parser.add_argument('-x', '--proxy', help='设置代理。例如：-x 127.0.0.1:8888 或 --proxy 127.0.0.1:8888')
+    parser.add_argument('-N', '--concurrency', type=int, default=3, help='下载并发数，默认为3')
     args = parser.parse_args()
-
     input_url = args.input
     output = args.output
     header = args.header if args.header else []
     proxy = args.proxy
-    downloader = Downloader(pool_size=10, headers=parse_headers(header), proxy=proxy)
+    concurrency = max(args.concurrency, 1)
+    downloader = Downloader(pool_size=20, headers=parse_headers(header), proxy=proxy, concurrency=concurrency)
     print('下载 ' + input_url)
     downloader.run(input_url, output)
 
