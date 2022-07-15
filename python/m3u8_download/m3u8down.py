@@ -60,8 +60,7 @@ def runcmd(cmd, shell=False):
         output = stdout + stderr
         if shell:
             try:
-                import locale
-                output = output.decode(locale.getpreferredencoding(False))
+                output = output.decode('GBK')
             except Exception:
                 output = output.decode('UTF-8', errors='ignore')
         else:
@@ -75,15 +74,28 @@ def runcmd(cmd, shell=False):
 
 class Downloader:
 
-    def __init__(self, pool_size=10, headers={}, max_retries=3, proxy=None, concurrency: int = 1):
+    def __init__(
+        self,
+        pool_size: int = 10,
+        headers: dict = {},
+        download_m3u8_headers: dict = {},
+        download_segment_headers: dict = {},
+        segment_auto_referer: bool = False,
+        max_retries: int = 3,
+        proxy=None,
+        concurrency: int = 1,
+    ):
         self.pool_size = max(1, pool_size)
         self.headers = headers
         self.max_retries = max(0, max_retries)
         self.retries = 0
-        if proxy and not proxy.startswith('http://') and not proxy.startswith('https://'):
+        if proxy and not proxy.startswith(('https://', 'http://')):
             proxy = f'http://{proxy}'
         self.proxy = proxy
         self.concurrency = concurrency
+        self.download_m3u8_headers = download_m3u8_headers
+        self.download_segment_headers = download_segment_headers
+        self.segment_auto_referer = segment_auto_referer
         self.m3u8_obj = None
         self.ts_total = 0
         self.m3u8_url = ''
@@ -93,9 +105,9 @@ class Downloader:
         self.key_map = {}
         self.succed = {}
 
-    def _build_headers(self, url: str):
-        headers = {}
-        if 'referer' not in self.session.headers:
+    def _build_segment_headers(self, url: str):
+        headers = self.download_segment_headers
+        if self.segment_auto_referer and 'referer' not in self.session.headers and 'referer' not in headers:
             result = re.search(r'(https?://[^/\n\s]+)', url)
             referer = result.group(1) if result else ''
             headers.update({'referer': referer})
@@ -106,10 +118,10 @@ class Downloader:
         def resove(m3u8_obj):
             base_uri = os.path.dirname(url)
             for seg in m3u8_obj.segments:
-                if not seg.uri.startswith('http://') and not seg.uri.startswith('https://'):
+                if not seg.uri.startswith(('https://', 'http://')):
                     seg.uri = '/'.join(os.path.join(base_uri, seg.uri).split('\\'))
 
-        if not url.startswith('http://') and not url.startswith('https://'):
+        if not url.startswith(('https://', 'http://')):
             if not Path(url).is_file():
                 raise Exception(f'找不到文件：\'{url}\'')
             text = read_file(url)
@@ -119,7 +131,7 @@ class Downloader:
             resove(self.m3u8_obj)
             return
 
-        async with self.session.get(url, headers=self._build_headers(url), proxy=self.proxy) as resp:
+        async with self.session.get(url, headers=self.download_m3u8_headers, proxy=self.proxy) as resp:
             text = await resp.text()
             self.m3u8_md5 = calculate_md5(text)
             self.m3u8_obj = m3u8.loads(text)
@@ -130,7 +142,7 @@ class Downloader:
         key_uri = parse.urljoin(self.m3u8_obj.base_uri, key_uri)
         key_content = self.key_map.get(key_uri)
         if not key_content:
-            async with self.session.get(key_uri, headers=self._build_headers(key_uri)) as resp:
+            async with self.session.get(key_uri, headers=self._build_segment_headers(key_uri), proxy=self.proxy) as resp:
                 if resp.ok:
                     key_content = await resp.read()
                     self.key_map[key_uri] = key_content
@@ -141,10 +153,11 @@ class Downloader:
 
     async def _fetch_segment(self, seg, index):
         url = seg.uri
+        filepath = Path(self.output_dir, calculate_md5(url))
 
         async def process(data):
-            filepath = Path(self.output_dir, calculate_md5(url))
-            filepath.write_bytes(data)
+            if not filepath.is_file():
+                filepath.write_bytes(data)
             filepath_str = str(filepath)
             is_enc = hasattr(seg.key, 'uri') and seg.key.uri
             if is_enc:
@@ -170,11 +183,13 @@ class Downloader:
 
         data = None
         async with self.lock:
-            if not url.startswith('http://') and not url.startswith('https://'):
+            if filepath.is_file():
+                await process(None)
+            elif not url.startswith(('https://', 'http://')):
                 data = Path(url).read_bytes()
             else:
                 try:
-                    async with self.session.get(url, headers=self._build_headers(url), proxy=self.proxy) as resp:
+                    async with self.session.get(url, headers=self._build_segment_headers(url), proxy=self.proxy) as resp:
                         if resp.ok:
                             data = await resp.read()
                         else:
@@ -231,13 +246,17 @@ class Downloader:
 
     def _merge_segments(self):
         self.output_ts = os.path.join(self.output_dir, os.path.splitext(os.path.basename(self.output_mp4))[0] + '.ts')
-        with open(self.output_ts, 'wb') as outfile:
-            for i in list(range(self.ts_total)):
-                infile_path = self.succed.get(i, '')
-                with open(infile_path, 'rb') as infile:
-                    outfile.write(infile.read())
-                os.remove(infile_path)
-                s = f"\r合并视频片段 [{i+1}/{len(self.succed)}] "
+        with open(self.output_ts, 'wb') as out_fp:
+            infiles = [self.succed.get(i) for i in range(self.ts_total)]
+            i = 0
+            while len(infiles) > 0:
+                infile = infiles.pop(0)
+                with open(infile, 'rb') as in_fp:
+                    out_fp.write(in_fp.read())
+                    i += 1
+                if infile not in infiles:
+                    os.remove(infile)
+                s = f"\r合并视频片段 [{i}/{len(self.succed)}] "
                 sys.stdout.write(s)
                 sys.stdout.flush()
 
@@ -349,18 +368,34 @@ def parse_headers(header=[]):
 
 def parse_inputs():
     parser = argparse.ArgumentParser(description='可用参数如下：')
-    parser.add_argument('input', help='本地文件路径或远程URL')
-    parser.add_argument('output', help='输出文件的路径')
-    parser.add_argument('--header', action='append', help='添加请求头。例如：--header="pragma: no-cache"')
+    parser.add_argument('input', help='本地文件路径或远程URL。如：./input.m3u8 或 https://example.com/test.m3u8')
+    parser.add_argument('output', help='输出文件路径。如：./output.mp4')
+    parser.add_argument('--header', action='append', default=[], help='默认请求头。例如：--header "pragma: no-cache"')
+    parser.add_argument('--download-m3u8-header', action='append', default=[], help='指定下载m3u8文件时的请求头。例如：--header "referer: https://httpbin.org/"')
+    parser.add_argument('--download-segment-header', action='append', default=[], help='指定下载分片时的请求头。例如：--header "referer: https://httpbin.org/"')
+    parser.add_argument(
+        '--segment-auto-referer', action='store_true', help='指定此选项，下载分片时自动设置referer请求头。如果--header参数或--download-segment-header参数已指定referer，此选项将失效。'
+    )
     parser.add_argument('-x', '--proxy', help='设置代理。例如：-x 127.0.0.1:8888 或 --proxy 127.0.0.1:8888')
-    parser.add_argument('-N', '--concurrency', type=int, default=3, help='下载并发数，默认为3')
+    parser.add_argument('-N', '--concurrency', type=int, default=3, help='下载并发数，默认：3')
     args = parser.parse_args()
     input_url = args.input
     output = args.output
-    header = args.header if args.header else []
+    header = args.header
     proxy = args.proxy
+    download_m3u8_header = args.download_m3u8_header
+    download_segment_header = args.download_segment_header
+    segment_auto_referer = args.segment_auto_referer
     concurrency = max(args.concurrency, 1)
-    downloader = Downloader(pool_size=20, headers=parse_headers(header), proxy=proxy, concurrency=concurrency)
+    downloader = Downloader(
+        pool_size=20,
+        headers=parse_headers(header),
+        download_m3u8_headers=parse_headers(download_m3u8_header),
+        download_segment_headers=parse_headers(download_segment_header),
+        segment_auto_referer=segment_auto_referer,
+        concurrency=concurrency,
+        proxy=proxy,
+    )
     print('下载 ' + input_url)
     downloader.run(input_url, output)
 
