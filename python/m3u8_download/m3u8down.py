@@ -11,6 +11,7 @@ import re
 import shutil
 import sys
 from pathlib import Path
+from typing import Tuple
 from urllib import parse
 
 import aiohttp
@@ -50,21 +51,25 @@ def ensure_path_unique(path, isfile=True):
     return unique_path
 
 
-def runcmd(cmd, shell=False):
+def runcmd(cmd: str, shell=False) -> Tuple[str, int]:
     try:
         import shlex
         import subprocess
         args = cmd if shell else shlex.split(cmd)
         process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=shell)
         stdout, stderr = process.communicate()
-        output = stdout + stderr
+        output_bytes = (stdout + stderr).rstrip(b'\r\n')
         if shell:
+            output = None
             try:
-                output = output.decode('GBK')
+                output = output_bytes.decode('UTF-8')
             except Exception:
-                output = output.decode('UTF-8', errors='ignore')
+                output = output_bytes.decode('GBK')
+            finally:
+                if output is None:
+                    output = output_bytes.decode('UTF-8', errors='ignore')
         else:
-            output = output.decode('UTF-8', errors='ignore')
+            output = output_bytes.decode('UTF-8', errors='ignore')
         returncode = process.returncode
     except Exception as e:
         output = str(e)
@@ -96,7 +101,6 @@ class Downloader:
         self.download_m3u8_headers = download_m3u8_headers
         self.download_segment_headers = download_segment_headers
         self.segment_auto_referer = segment_auto_referer
-        self.m3u8_obj = None
         self.ts_total = 0
         self.m3u8_url = ''
         self.output_dir = ''
@@ -318,7 +322,7 @@ class Downloader:
     async def main(self):
         self.lock = asyncio.Semaphore(self.concurrency)
         conn = aiohttp.TCPConnector(limit=self.pool_size)
-        timeout = aiohttp.ClientTimeout(total=None, connect=None, sock_connect=20, sock_read=20)
+        timeout = aiohttp.ClientTimeout(total=None, connect=None, sock_connect=30, sock_read=60)
         async with aiohttp.ClientSession(connector=conn, timeout=timeout) as session:
             self.session = session
             # 默认设置为移动端User-Agent
