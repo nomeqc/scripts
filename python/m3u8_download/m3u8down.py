@@ -4,14 +4,13 @@
 import argparse
 import asyncio
 import hashlib
-import locale
 import math
 import os
 import re
 import shutil
 import sys
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple, Union
 from urllib import parse
 
 import aiohttp
@@ -24,7 +23,7 @@ if sys.version_info[0] == 3 and sys.version_info[1] >= 8 and sys.platform.starts
 
 
 def read_file(filepath):
-    codecs = ['utf-8', locale.getpreferredencoding(False)]
+    codecs = ['utf-8', 'gbk']
     for i, codec in enumerate(codecs):
         try:
             return Path(filepath).read_text(encoding=codec)
@@ -33,44 +32,45 @@ def read_file(filepath):
                 raise Exception(f'文件：\'{filepath}\' 解码失败。只支持文件编码：{"、".join(codecs)}')
 
 
-def calculate_md5(s):
+def calc_md5(s):
     data = s.encode('utf-8') if type(s) == str else s
     return hashlib.md5(data).hexdigest()
 
 
-def ensure_path_unique(path, isfile=True):
-    unique_path = path
-    n = 1
-    while os.path.exists(unique_path):
+def unique_filepath(filepath: Union[str, Path], isfile=True):
+    filepath = Path(filepath)
+    seq = 2
+    new_filepath = filepath
+    while new_filepath.exists():
         if isfile:
-            part = os.path.splitext(path)
-            unique_path = '{} ({}){}'.format(part[0], n, part[1])
+            new_filepath = filepath.with_name(f'{filepath.stem} ({seq}){filepath.suffix}')
         else:
-            unique_path = '{} ({})'.format(path, n)
-        n += 1
-    return unique_path
+            new_filepath = filepath.with_name(f'{filepath.name} ({seq})')
+        seq += 1
+    return new_filepath
 
 
-def runcmd(cmd: str, shell=False) -> Tuple[str, int]:
+def runcmd(cmd: str, shell=False, show_window=False) -> Tuple[str, int]:
     try:
         import shlex
         import subprocess
         args = cmd if shell else shlex.split(cmd)
-        process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=shell)
-        stdout, stderr = process.communicate()
-        output_bytes = (stdout + stderr).rstrip(b'\r\n')
-        if shell:
-            output = None
-            try:
-                output = output_bytes.decode('UTF-8')
-            except Exception:
-                output = output_bytes.decode('GBK')
-            finally:
-                if output is None:
-                    output = output_bytes.decode('UTF-8', errors='ignore')
-        else:
-            output = output_bytes.decode('UTF-8', errors='ignore')
-        returncode = process.returncode
+        startupinfo = None
+        if os.name == 'nt' and not shell and not show_window:
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        proc = subprocess.Popen(args, startupinfo=startupinfo, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=shell)
+        stdout, _ = proc.communicate()
+        stdout = stdout.rstrip(b'\r\n')
+        output = None
+        try:
+            output = stdout.decode('UTF-8')
+        except Exception:
+            output = stdout.decode('GBK')
+        finally:
+            if output is None:
+                output = stdout.decode('UTF-8', errors='ignore')
+        returncode = proc.returncode
     except Exception as e:
         output = str(e)
         returncode = 2
@@ -101,35 +101,43 @@ class Downloader:
         self.download_m3u8_headers = download_m3u8_headers
         self.download_segment_headers = download_segment_headers
         self.segment_auto_referer = segment_auto_referer
-        self.ts_total = 0
-        self.m3u8_url = ''
-        self.output_dir = ''
-        self.output_mp4 = ''
-        self.output_ts = ''
-        self.key_map = {}
+        self.cache = {}
         self.succed = {}
 
+    def _segment_basename(self, seg):
+        byterange = self._parse_byterange(seg.byterange)
+        url = f'{seg.uri}#{byterange[0]}-{byterange[1]}' if byterange else seg.uri
+        return calc_md5(url)
+
     def _build_segment_headers(self, url: str):
-        headers = self.download_segment_headers
+        headers = self.download_segment_headers if self.download_segment_headers else {}
         if self.segment_auto_referer and 'referer' not in self.session.headers and 'referer' not in headers:
             result = re.search(r'(https?://[^/\n\s]+)', url)
             referer = result.group(1) if result else ''
             headers.update({'referer': referer})
         return headers
 
+    def _is_fmp4(self):
+        return self.m3u8_obj.segment_map is not None
+
+    def _is_encrypt(self):
+        first_segment = self.m3u8_obj.segments[0]
+        return hasattr(first_segment.key, 'uri') and first_segment.key.uri
+
     async def load_m3u8(self, url):
 
         def resove(m3u8_obj):
-            base_uri = os.path.dirname(url)
+            m3u8_obj.base_uri = '/'.join(os.path.dirname(url).split('\\')) + '/'
             for seg in m3u8_obj.segments:
-                if not seg.uri.startswith(('https://', 'http://')):
-                    seg.uri = '/'.join(os.path.join(base_uri, seg.uri).split('\\'))
+                seg.uri = seg.absolute_uri
+                if hasattr(seg.key, 'uri') and seg.key.uri:
+                    seg.key.uri = seg.key.absolute_uri
 
         if not url.startswith(('https://', 'http://')):
             if not Path(url).is_file():
                 raise Exception(f'找不到文件：\'{url}\'')
             text = read_file(url)
-            self.m3u8_md5 = calculate_md5(text)
+            self.m3u8_md5 = calc_md5(text)
             self.m3u8_obj = m3u8.loads(text)
             self.ts_total = len(self.m3u8_obj.segments)
             resove(self.m3u8_obj)
@@ -137,27 +145,65 @@ class Downloader:
 
         async with self.session.get(url, headers=self.download_m3u8_headers, proxy=self.proxy) as resp:
             text = await resp.text()
-            self.m3u8_md5 = calculate_md5(text)
+            self.m3u8_md5 = calc_md5(text)
             self.m3u8_obj = m3u8.loads(text)
             self.ts_total = len(self.m3u8_obj.segments)
             resove(self.m3u8_obj)
 
     async def _fetch_key(self, key_uri):
         key_uri = parse.urljoin(self.m3u8_obj.base_uri, key_uri)
-        key_content = self.key_map.get(key_uri)
-        if not key_content:
+        content = self.cache.get(key_uri)
+        if not content:
             async with self.session.get(key_uri, headers=self._build_segment_headers(key_uri), proxy=self.proxy) as resp:
                 if resp.ok:
-                    key_content = await resp.read()
-                    self.key_map[key_uri] = key_content
+                    content = await resp.read()
+                    self.cache[key_uri] = content
                 else:
                     print(f'无法下载key：{key_uri}')
                     sys.exit(1)
-        return key_content
+        return content
+
+    def _parse_byterange(self, byterange) -> Optional[Tuple[int, int]]:
+        if not byterange:
+            return None
+        result = re.search(r'(\d+)@(\d+)', byterange)
+        if not result:
+            return None
+        offset = int(result.group(2))
+        length = int(result.group(1))
+        return offset, offset + length - 1
+
+    async def _fetch_init_section(self, seg):
+        if not seg.init_section:
+            return b''
+        section = seg.init_section
+        url = section.absolute_uri
+        if not url.startswith(('http://', 'https://')):
+            filepath = self.output_dir.joinpath(url)
+            assert filepath.exists(), f'找不到文件：{filepath}'
+            return filepath.read_bytes()
+        byterange = self._parse_byterange(section.byterange)
+        key = f'{url}#{byterange[0]}-{byterange[1]}' if byterange else url
+
+        content = self.cache.get(key)
+        if not content:
+            headers = self._build_segment_headers(url)
+            if byterange:
+                headers.update({'Range': f'bytes={byterange[0]}-{byterange[1]}'})
+            async with self.session.get(url, headers=headers, proxy=self.proxy) as resp:
+                if resp.ok:
+                    content = await resp.read()
+                    self.cache[key] = content
+                    return content
+                else:
+                    print(f'无法下载init_section：{url}')
+                    sys.exit(1)
+        return content
 
     async def _fetch_segment(self, seg, index):
         url = seg.uri
-        filepath = Path(self.output_dir, calculate_md5(url))
+        byterange = self._parse_byterange(seg.byterange)
+        filepath = self.output_dir.joinpath(self._segment_basename(seg))
 
         async def process(data):
             if not filepath.is_file():
@@ -185,6 +231,7 @@ class Downloader:
             sys.stdout.write(s)
             sys.stdout.flush()
 
+        init_section_data = b''
         data = None
         async with self.lock:
             if filepath.is_file():
@@ -193,7 +240,11 @@ class Downloader:
                 data = Path(url).read_bytes()
             else:
                 try:
-                    async with self.session.get(url, headers=self._build_segment_headers(url), proxy=self.proxy) as resp:
+                    init_section_data = await self._fetch_init_section(seg)
+                    headers = self._build_segment_headers(url)
+                    if byterange:
+                        headers.update({'Range': f'bytes={byterange[0]}-{byterange[1]}'})
+                    async with self.session.get(url, headers=headers, proxy=self.proxy) as resp:
                         if resp.ok:
                             data = await resp.read()
                         else:
@@ -201,21 +252,24 @@ class Downloader:
                 except Exception as e:
                     print(f'\'{url}\'下载失败。错误：{e}')
             if data:
+                data = init_section_data + data
                 await process(data)
 
     async def _download_segments(self):
         # 统计下载成功的片段
         self.succed = {}
         for index, seg in enumerate(self.m3u8_obj.segments):
-            ts_path = os.path.join(self.output_dir, calculate_md5(seg.uri))
-            if os.path.isfile(ts_path):
+            ts_path = self.output_dir.joinpath(self._segment_basename(seg))
+            if ts_path.is_file():
                 self.succed[index] = ts_path
         pending = len(self.m3u8_obj.segments) - len(self.succed)
         if pending == 0:
             return
         first_segment = self.m3u8_obj.segments[0]
-        if hasattr(first_segment.key, 'uri') and first_segment.key.uri:
+        if self._is_encrypt():
             await self._fetch_key(first_segment.key.uri)
+        if self._is_fmp4():
+            await self._fetch_init_section(first_segment)
         while pending > 0:
             tasks = []
             for index, seg in enumerate(self.m3u8_obj.segments):
@@ -236,39 +290,42 @@ class Downloader:
             else:
                 print('')
 
-    def _decrypt(self, in_filepath, out_filepath, iv, key):
+    def _decrypt(self, in_filepath: Union[str, Path], out_filepath: Union[str, Path], iv, key):
+        infile = Path(in_filepath)
+        outfile = Path(out_filepath)
         chunk_size = AES.block_size * 1024
         cipher = AES.new(key, AES.MODE_CBC, iv)
-        with open(in_filepath, 'rb') as infile:
-            with open(out_filepath, 'wb') as outfile:
-                for chunk in iter(lambda: infile.read(chunk_size), b''):
+        with outfile.open('wb') as outfp:
+            with infile.open('rb') as infp:
+                for chunk in iter(lambda: infp.read(chunk_size), b''):
                     try:
-                        outfile.write(cipher.decrypt(chunk))
+                        outfp.write(cipher.decrypt(chunk))
                     except Exception as e:
                         print(f'❌解密失败：{str(e)}')
                         sys.exit(1)
 
     def _merge_segments(self):
-        self.output_ts = os.path.join(self.output_dir, os.path.splitext(os.path.basename(self.output_mp4))[0] + '.ts')
-        with open(self.output_ts, 'wb') as out_fp:
-            infiles = [self.succed.get(i) for i in range(self.ts_total)]
-            i = 0
+        self.output_ts = self.output_dir.joinpath(f'{self.output_mp4.stem}.ts')
+        with self.output_ts.open('wb') as fp:
+            infiles = [Path(self.succed.get(i, '')) for i in range(self.ts_total)]
+            num = 0
             while len(infiles) > 0:
                 infile = infiles.pop(0)
-                with open(infile, 'rb') as in_fp:
-                    out_fp.write(in_fp.read())
-                    i += 1
-                if infile not in infiles:
-                    os.remove(infile)
-                s = f"\r合并视频片段 [{i}/{len(self.succed)}] "
-                sys.stdout.write(s)
+                fp.write(infile.read_bytes())
+                num += 1
+                sys.stdout.write(f"\r合并视频片段 [{num}/{len(self.succed)}] ")
                 sys.stdout.flush()
+                if infile not in infiles:
+                    infile.unlink()
 
-    def extract_valid_data(self, ts_path):
+    def extract_valid_data(self, ts_path: Union[str, Path]):
+        if self._is_fmp4():
+            return
+        ts_path = Path(ts_path)
         '''
         有的TS伪装成图片，下载到本地不能直接播放。根据TS文件格式特点，提取有效数据。
         '''
-        with open(ts_path, "r+b") as fp:
+        with ts_path.open('r+b') as fp:
             data = fp.read()
             b_list = list(data)
             MP2T_PACKET_LENGTH = 188
@@ -308,9 +365,9 @@ class Downloader:
         if returncode != 0:
             raise Exception(f'❌检测编码失败：\n{output}')
         bit_stream_filter = '-bsf:a aac_adtstoasc' if 'Audio: aac' in output else ''
-        if not self.output_mp4.endswith('.mp4'):
-            self.output_mp4 = self.output_mp4 + '.mp4'
-        self.output_mp4 = ensure_path_unique(self.output_mp4)
+        if not self.output_mp4.suffix != '.mp4':
+            self.output_mp4 = self.output_mp4.with_suffix('.mp4')
+        self.output_mp4 = unique_filepath(self.output_mp4)
         print('\n正在转换成mp4格式...')
         cmd = f'ffmpeg -i "{self.output_ts}" -c copy {bit_stream_filter} "{self.output_mp4}"'
         output, returncode = runcmd(cmd)
@@ -333,14 +390,11 @@ class Downloader:
             if self.ts_total == 0:
                 print('没有任何片段')
                 sys.exit(1)
+            self.output_dir = unique_filepath(self.output_mp4.with_name(self.m3u8_md5))
+            if not self.output_dir.is_dir():
+                self.output_dir = unique_filepath(self.output_dir, isfile=False)
+                self.output_dir.mkdir(parents=True)
 
-            self.output_dir = os.path.join(os.path.dirname(self.output_mp4), self.m3u8_md5)
-            if not Path(self.output_dir).exists():
-                Path(self.output_dir).mkdir(parents=True)
-            elif Path(self.output_dir).is_file():
-                output_dir_path = Path(ensure_path_unique(self.output_dir, isfile=False))
-                output_dir_path.mkdir()
-                self.output_dir = str(output_dir_path)
             await self._download_segments()
         self._merge_segments()
         if self._convert_to_mp4():
@@ -355,7 +409,7 @@ class Downloader:
             print('output_file不能为空')
             sys.exit(1)
         self.m3u8_url = m3u8_url
-        self.output_mp4 = os.path.realpath(output_file)
+        self.output_mp4 = Path(output_file).absolute()
         asyncio.run(self.main())
 
 
@@ -402,6 +456,19 @@ def parse_inputs():
     )
     print('下载 ' + input_url)
     downloader.run(input_url, output)
+
+
+def run_test():
+    if sys.gettrace():
+        # sys.argv.extend(
+        #     [
+        #         'https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_fmp4/v5/prog_index.m3u8',
+        #         r'D:\fallrainy\Downloads\新建文件夹 (3)\output.mp4', '-N', '3'
+        #     ]
+        # )
+        sys.argv.extend(
+            ['https://cdn.jsdelivr.net/gh/nomeqc/static@main/video/encrypt.m3u8', r'D:\fallrainy\Downloads\新建文件夹 (3)\output2.mp4', '-N', '1']
+        )
 
 
 if __name__ == '__main__':
