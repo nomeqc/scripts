@@ -10,6 +10,7 @@ import re
 import shutil
 import sys
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Optional, Tuple, Union
 from urllib import parse
 
@@ -104,10 +105,27 @@ class Downloader:
         self.cache = {}
         self.succed = {}
 
+    def _is_fmp4(self):
+        return self.m3u8_obj.segment_map is not None
+
+    def _is_encrypt(self):
+        first_segment = self.m3u8_obj.segments[0]
+        return hasattr(first_segment.key, 'uri') and first_segment.key.uri
+
     def _segment_basename(self, seg):
         byterange = self._parse_byterange(seg.byterange)
         url = f'{seg.uri}#{byterange[0]}-{byterange[1]}' if byterange else seg.uri
         return calc_md5(url)
+
+    def _parse_byterange(self, byterange) -> Optional[Tuple[int, int]]:
+        if not byterange:
+            return None
+        result = re.search(r'(\d+)@(\d+)', byterange)
+        if not result:
+            return None
+        offset = int(result.group(2))
+        length = int(result.group(1))
+        return offset, offset + length - 1
 
     def _build_segment_headers(self, url: str):
         headers = self.download_segment_headers if self.download_segment_headers else {}
@@ -116,13 +134,6 @@ class Downloader:
             referer = result.group(1) if result else ''
             headers.update({'referer': referer})
         return headers
-
-    def _is_fmp4(self):
-        return self.m3u8_obj.segment_map is not None
-
-    def _is_encrypt(self):
-        first_segment = self.m3u8_obj.segments[0]
-        return hasattr(first_segment.key, 'uri') and first_segment.key.uri
 
     async def load_m3u8(self, url):
 
@@ -163,16 +174,6 @@ class Downloader:
                     sys.exit(1)
         return content
 
-    def _parse_byterange(self, byterange) -> Optional[Tuple[int, int]]:
-        if not byterange:
-            return None
-        result = re.search(r'(\d+)@(\d+)', byterange)
-        if not result:
-            return None
-        offset = int(result.group(2))
-        length = int(result.group(1))
-        return offset, offset + length - 1
-
     async def _fetch_init_section(self, seg):
         if not seg.init_section:
             return b''
@@ -200,28 +201,22 @@ class Downloader:
                     sys.exit(1)
         return content
 
-    async def _fetch_segment(self, seg, index):
+    async def _fetch_segment(self, seg, index: int):
         url = seg.uri
         byterange = self._parse_byterange(seg.byterange)
-        filepath = self.output_dir.joinpath(self._segment_basename(seg))
+        target_filepath = self.output_dir.joinpath(self._segment_basename(seg))
+        if target_filepath.is_file():
+            return
+        assert not target_filepath.is_dir(), f'文件名："{target_filepath}"已被文件夹占用'
 
         async def process(data):
-            if not filepath.is_file():
-                filepath.write_bytes(data)
-            filepath_str = str(filepath)
-            is_enc = hasattr(seg.key, 'uri') and seg.key.uri
-            if is_enc:
-                if seg.key.iv:
-                    iv = '{:032x}'.format(int(str(seg.key.iv), 16))
-                else:
-                    iv = '{:032x}'.format(int(str(index), 16))
-                iv = bytes.fromhex(iv)
-                key_content = await self._fetch_key(seg.key.uri)
-                self._decrypt(filepath_str, filepath_str + '.dec', iv, key_content)
-                filepath.unlink()
-                Path(filepath_str + '.dec').rename(filepath_str)
-            self.extract_valid_data(filepath_str)
-            self.succed[index] = filepath_str
+            with NamedTemporaryFile(prefix=f'output{index}_', suffix='.raw', dir=self.output_dir, delete=False) as fp:
+                fp.write(data)
+            src_filepath = Path(fp.name)
+            dst_filepath = await self._decrypt_segment(src_filepath, seg)
+            self.extract_valid_data(dst_filepath)
+            dst_filepath.rename(target_filepath)
+            self.succed[index] = target_filepath
             # 更新进度条
             progress = math.floor(len(self.succed) / float(self.ts_total) * 100)
             progress_step = 2.5
@@ -234,9 +229,8 @@ class Downloader:
         init_section_data = b''
         data = None
         async with self.lock:
-            if filepath.is_file():
-                await process(None)
-            elif not url.startswith(('https://', 'http://')):
+            if not url.startswith(('https://', 'http://')):
+                assert Path(url).is_file(), f'找不到文件："{url}"'
                 data = Path(url).read_bytes()
             else:
                 try:
@@ -304,6 +298,22 @@ class Downloader:
                         print(f'❌解密失败：{str(e)}')
                         sys.exit(1)
 
+    async def _decrypt_segment(self, src_filepath: Union[str, Path], seg):
+        src_filepath = Path(src_filepath)
+        is_enc = hasattr(seg.key, 'uri') and seg.key.uri
+        if not is_enc:
+            return src_filepath
+        if seg.key.iv:
+            iv = '{:032x}'.format(int(str(seg.key.iv), 16))
+        else:
+            iv = '{:032x}'.format(int(str(self.m3u8_obj.segments.index(seg)), 16))
+        iv = bytes.fromhex(iv)
+        key_content = await self._fetch_key(seg.key.uri)
+        dst_filepath = src_filepath.with_suffix('.dec')
+        self._decrypt(src_filepath, dst_filepath, iv, key_content)
+        src_filepath.unlink()
+        return dst_filepath
+
     def _merge_segments(self):
         self.output_ts = self.output_dir.joinpath(f'{self.output_mp4.stem}.ts')
         with self.output_ts.open('wb') as fp:
@@ -327,31 +337,31 @@ class Downloader:
         '''
         with ts_path.open('r+b') as fp:
             data = fp.read()
-            b_list = list(data)
+            byte_list = list(data)
             MP2T_PACKET_LENGTH = 188
             SYNC_BYTE = 0x47
-            start_index = 0
-            end_index = MP2T_PACKET_LENGTH
-            left = -1
-            right = -1
-            while end_index < len(b_list):
-                if b_list[start_index] == SYNC_BYTE and b_list[end_index] == SYNC_BYTE:
-                    if left == -1:
-                        left = start_index
-                    right = end_index
-                    start_index += MP2T_PACKET_LENGTH
-                    end_index += MP2T_PACKET_LENGTH
+            left_index = 0
+            right_index = MP2T_PACKET_LENGTH
+            start = -1
+            stop = -1
+            while right_index < len(byte_list):
+                if byte_list[left_index] == SYNC_BYTE and byte_list[right_index] == SYNC_BYTE:
+                    if start == -1:
+                        start = left_index
+                    if right_index + MP2T_PACKET_LENGTH <= len(byte_list):
+                        stop = right_index + MP2T_PACKET_LENGTH
+                    else:
+                        stop = right_index
+                    left_index += MP2T_PACKET_LENGTH
+                    right_index += MP2T_PACKET_LENGTH
                     continue
-                start_index += 1
-                end_index += 1
-            if left == -1:
+                left_index += 1
+                right_index += 1
+            if start == -1:
                 raise Exception(f'发生错误！非法的TS文件：{ts_path}\n')
-            # 加上最后一个package的长度
-            if right + MP2T_PACKET_LENGTH <= len(b_list):
-                right += MP2T_PACKET_LENGTH
             fp.truncate(0)
             fp.seek(0)
-            fp.write(data[left:right])
+            fp.write(data[start:stop])
 
     def _convert_to_mp4(self):
         if runcmd('ffmpeg -version')[-1] != 0:
@@ -390,11 +400,10 @@ class Downloader:
             if self.ts_total == 0:
                 print('没有任何片段')
                 sys.exit(1)
-            self.output_dir = unique_filepath(self.output_mp4.with_name(self.m3u8_md5))
+            self.output_dir = self.output_mp4.with_name(self.m3u8_md5)
             if not self.output_dir.is_dir():
                 self.output_dir = unique_filepath(self.output_dir, isfile=False)
                 self.output_dir.mkdir(parents=True)
-
             await self._download_segments()
         self._merge_segments()
         if self._convert_to_mp4():
@@ -463,6 +472,12 @@ def run_test():
         # sys.argv.extend(
         #     [
         #         'https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_fmp4/v5/prog_index.m3u8',
+        #         r'D:\fallrainy\Downloads\新建文件夹 (3)\output.mp4', '-N', '3'
+        #     ]
+        # )
+        # sys.argv.extend(
+        #     [
+        #         'https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/v5/prog_index.m3u8',
         #         r'D:\fallrainy\Downloads\新建文件夹 (3)\output.mp4', '-N', '3'
         #     ]
         # )
