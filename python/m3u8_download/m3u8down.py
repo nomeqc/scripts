@@ -143,6 +143,8 @@ class Downloader:
                 seg.uri = seg.absolute_uri
                 if hasattr(seg.key, 'uri') and seg.key.uri:
                     seg.key.uri = seg.key.absolute_uri
+                if seg.init_section:
+                    seg.init_section.uri = seg.init_section.absolute_uri
 
         if not url.startswith(('https://', 'http://')):
             if not Path(url).is_file():
@@ -178,9 +180,9 @@ class Downloader:
         if not seg.init_section:
             return b''
         section = seg.init_section
-        url = section.absolute_uri
+        url = section.uri
         if not url.startswith(('http://', 'https://')):
-            filepath = self.output_dir.joinpath(url)
+            filepath = self.download_dir.joinpath(url)
             assert filepath.exists(), f'找不到文件：{filepath}'
             return filepath.read_bytes()
         byterange = self._parse_byterange(section.byterange)
@@ -204,13 +206,13 @@ class Downloader:
     async def _fetch_segment(self, seg, index: int):
         url = seg.uri
         byterange = self._parse_byterange(seg.byterange)
-        target_filepath = self.output_dir.joinpath(self._segment_basename(seg))
+        target_filepath = self.download_dir.joinpath(self._segment_basename(seg))
         if target_filepath.is_file():
             return
-        assert not target_filepath.is_dir(), f'文件名："{target_filepath}"已被文件夹占用'
+        assert not target_filepath.is_dir(), f'❌文件名已被占用，存在同名目录："{target_filepath}"'
 
         async def process(data):
-            with NamedTemporaryFile(prefix=f'output{index}_', suffix='.raw', dir=self.output_dir, delete=False) as fp:
+            with NamedTemporaryFile(prefix=f'output{index}_', suffix='.raw', dir=self.download_dir, delete=False) as fp:
                 fp.write(data)
             src_filepath = Path(fp.name)
             dst_filepath = await self._decrypt_segment(src_filepath, seg)
@@ -253,7 +255,7 @@ class Downloader:
         # 统计下载成功的片段
         self.succed = {}
         for index, seg in enumerate(self.m3u8_obj.segments):
-            ts_path = self.output_dir.joinpath(self._segment_basename(seg))
+            ts_path = self.download_dir.joinpath(self._segment_basename(seg))
             if ts_path.is_file():
                 self.succed[index] = ts_path
         pending = len(self.m3u8_obj.segments) - len(self.succed)
@@ -315,7 +317,7 @@ class Downloader:
         return dst_filepath
 
     def _merge_segments(self):
-        self.output_ts = self.output_dir.joinpath(f'{self.output_mp4.stem}.ts')
+        self.output_ts = self.download_dir.joinpath(f'{self.output_mp4.stem}.ts')
         with self.output_ts.open('wb') as fp:
             infiles = [Path(self.succed.get(i, '')) for i in range(self.ts_total)]
             num = 0
@@ -400,14 +402,14 @@ class Downloader:
             if self.ts_total == 0:
                 print('没有任何片段')
                 sys.exit(1)
-            self.output_dir = self.output_mp4.with_name(self.m3u8_md5)
-            if not self.output_dir.is_dir():
-                self.output_dir = unique_filepath(self.output_dir, isfile=False)
-                self.output_dir.mkdir(parents=True)
+            self.download_dir = self.output_mp4.with_name(self.m3u8_md5)
+            if not self.download_dir.is_dir():
+                self.download_dir = unique_filepath(self.download_dir, isfile=False)
+                self.download_dir.mkdir(parents=True)
             await self._download_segments()
         self._merge_segments()
         if self._convert_to_mp4():
-            shutil.rmtree(self.output_dir)
+            shutil.rmtree(self.download_dir)
         print('已保存到：{}\n'.format(self.output_mp4))
 
     def run(self, m3u8_url="", output_file=""):
@@ -469,21 +471,21 @@ def parse_inputs():
 
 def run_test():
     if sys.gettrace():
-        # sys.argv.extend(
-        #     [
-        #         'https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_fmp4/v5/prog_index.m3u8',
-        #         r'D:\fallrainy\Downloads\新建文件夹 (3)\output.mp4', '-N', '3'
-        #     ]
-        # )
+        sys.argv.extend(
+            [
+                'https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_fmp4/v5/prog_index.m3u8',
+                r'D:\fallrainy\Downloads\新建文件夹 (3)\output.mp4', '-N', '3'
+            ]
+        )
         # sys.argv.extend(
         #     [
         #         'https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/v5/prog_index.m3u8',
         #         r'D:\fallrainy\Downloads\新建文件夹 (3)\output.mp4', '-N', '3'
         #     ]
         # )
-        sys.argv.extend(
-            ['https://cdn.jsdelivr.net/gh/nomeqc/static@main/video/encrypt.m3u8', r'D:\fallrainy\Downloads\新建文件夹 (3)\output2.mp4', '-N', '1']
-        )
+        # sys.argv.extend(
+        #     ['https://cdn.jsdelivr.net/gh/nomeqc/static@main/video/encrypt.m3u8', r'D:\fallrainy\Downloads\新建文件夹 (3)\output2.mp4', '-N', '1']
+        # )
 
 
 if __name__ == '__main__':
