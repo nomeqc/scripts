@@ -23,7 +23,7 @@ if sys.version_info[0] == 3 and sys.version_info[1] >= 8 and sys.platform.starts
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 
-def read_file(filepath):
+def _read_file(filepath):
     codecs = ['utf-8', 'gbk']
     for i, codec in enumerate(codecs):
         try:
@@ -33,12 +33,12 @@ def read_file(filepath):
                 raise Exception(f'文件：\'{filepath}\' 解码失败。只支持文件编码：{"、".join(codecs)}')
 
 
-def calc_md5(s):
+def _calc_md5(s):
     data = s.encode('utf-8') if type(s) == str else s
     return hashlib.md5(data).hexdigest()
 
 
-def unique_filepath(filepath: Union[str, Path], isfile=True):
+def _unique_filepath(filepath: Union[str, Path], isfile=True):
     filepath = Path(filepath)
     seq = 2
     new_filepath = filepath
@@ -51,7 +51,7 @@ def unique_filepath(filepath: Union[str, Path], isfile=True):
     return new_filepath
 
 
-def runcmd(cmd: str, shell=False, show_window=False) -> Tuple[str, int]:
+def _runcmd(cmd: str, shell=False, show_window=False) -> Tuple[str, int]:
     try:
         import shlex
         import subprocess
@@ -78,7 +78,7 @@ def runcmd(cmd: str, shell=False, show_window=False) -> Tuple[str, int]:
     return output, returncode
 
 
-class Downloader:
+class M3U8Downloader:
 
     def __init__(
         self,
@@ -115,7 +115,7 @@ class Downloader:
     def _segment_basename(self, seg):
         byterange = self._parse_byterange(seg.byterange)
         url = f'{seg.uri}#{byterange[0]}-{byterange[1]}' if byterange else seg.uri
-        return calc_md5(url)
+        return _calc_md5(url)
 
     def _parse_byterange(self, byterange) -> Optional[Tuple[int, int]]:
         if not byterange:
@@ -135,7 +135,7 @@ class Downloader:
             headers.update({'referer': referer})
         return headers
 
-    async def load_m3u8(self, url):
+    async def _load_m3u8(self, url):
 
         def resove(m3u8_obj):
             m3u8_obj.base_uri = '/'.join(os.path.dirname(url).split('\\')) + '/'
@@ -149,8 +149,8 @@ class Downloader:
         if not url.startswith(('https://', 'http://')):
             if not Path(url).is_file():
                 raise Exception(f'找不到文件：\'{url}\'')
-            text = read_file(url)
-            self.m3u8_md5 = calc_md5(text)
+            text = _read_file(url)
+            self.m3u8_md5 = _calc_md5(text)
             self.m3u8_obj = m3u8.loads(text)
             self.ts_total = len(self.m3u8_obj.segments)
             resove(self.m3u8_obj)
@@ -158,7 +158,8 @@ class Downloader:
 
         async with self.session.get(url, headers=self.download_m3u8_headers, proxy=self.proxy) as resp:
             text = await resp.text()
-            self.m3u8_md5 = calc_md5(text)
+            assert resp.ok, f'下载："{url}"失败。状态码：{resp.status}'
+            self.m3u8_md5 = _calc_md5(text)
             self.m3u8_obj = m3u8.loads(text)
             self.ts_total = len(self.m3u8_obj.segments)
             resove(self.m3u8_obj)
@@ -216,7 +217,7 @@ class Downloader:
                 fp.write(data)
             src_filepath = Path(fp.name)
             dst_filepath = await self._decrypt_segment(src_filepath, seg)
-            self.extract_valid_data(dst_filepath)
+            self._extract_valid_data(dst_filepath)
             dst_filepath.rename(target_filepath)
             self.succed[index] = target_filepath
             # 更新进度条
@@ -330,7 +331,7 @@ class Downloader:
                 if infile not in infiles:
                     infile.unlink()
 
-    def extract_valid_data(self, ts_path: Union[str, Path]):
+    def _extract_valid_data(self, ts_path: Union[str, Path]):
         if self._is_fmp4():
             return
         ts_path = Path(ts_path)
@@ -366,29 +367,28 @@ class Downloader:
             fp.write(data[start:stop])
 
     def _convert_to_mp4(self):
-        if runcmd('ffmpeg -version')[-1] != 0:
+        if _runcmd('ffmpeg -version')[-1] != 0:
             print('检测到未安装ffmpeg，将跳过格式转换')
             return False
-        if runcmd('ffprobe -version')[-1] != 0:
+        if _runcmd('ffprobe -version')[-1] != 0:
             print('检测到未安装ffprobe，将跳过格式转换')
             return False
         cmd = f'ffprobe "{self.output_ts}"'
-        output, returncode = runcmd(cmd)
+        output, returncode = _runcmd(cmd)
         if returncode != 0:
             raise Exception(f'❌检测编码失败：\n{output}')
         bit_stream_filter = '-bsf:a aac_adtstoasc' if 'Audio: aac' in output else ''
-        if not self.output_mp4.suffix != '.mp4':
-            self.output_mp4 = self.output_mp4.with_suffix('.mp4')
-        self.output_mp4 = unique_filepath(self.output_mp4)
+        self.output_mp4 = self.output_mp4.with_suffix('.mp4')
+        self.output_mp4 = _unique_filepath(self.output_mp4)
         print('\n正在转换成mp4格式...')
         cmd = f'ffmpeg -i "{self.output_ts}" -c copy {bit_stream_filter} "{self.output_mp4}"'
-        output, returncode = runcmd(cmd)
+        output, returncode = _runcmd(cmd)
         if returncode != 0:
-            print(f'❌"{self.output_ts}" 转换成mp4格式失败')
+            print(f'❌"{self.output_ts}" 转换成mp4格式失败。cmd："{cmd}"')
             return False
         return True
 
-    async def main(self):
+    async def _main(self):
         self.lock = asyncio.Semaphore(self.concurrency)
         conn = aiohttp.TCPConnector(limit=self.pool_size)
         timeout = aiohttp.ClientTimeout(total=None, connect=None, sock_connect=30, sock_read=60)
@@ -398,21 +398,23 @@ class Downloader:
             self.session.headers.update({'user-agent': 'AppleCoreMedia/1.0.0.17D50 (iPhone; U; CPU OS 13_3_1 like Mac OS X; en_us)'})
             if self.headers:
                 self.session.headers.update(self.headers)
-            await self.load_m3u8(self.m3u8_url)
+            await self._load_m3u8(self.m3u8_url)
             if self.ts_total == 0:
                 print('没有任何片段')
                 sys.exit(1)
             self.download_dir = self.output_mp4.with_name(self.m3u8_md5)
             if not self.download_dir.is_dir():
-                self.download_dir = unique_filepath(self.download_dir, isfile=False)
+                self.download_dir = _unique_filepath(self.download_dir, isfile=False)
                 self.download_dir.mkdir(parents=True)
             await self._download_segments()
         self._merge_segments()
         if self._convert_to_mp4():
             shutil.rmtree(self.download_dir)
-        print('已保存到：{}\n'.format(self.output_mp4))
+            print('已保存到：{}\n'.format(self.output_mp4))
+        else:
+            print('已保存到：{}\n'.format(self.output_ts))
 
-    def run(self, m3u8_url="", output_file=""):
+    def run(self, m3u8_url: str, output_file: Union[Path, str]):
         if not m3u8_url:
             print('m3u8_url不能为空')
             sys.exit(1)
@@ -421,7 +423,7 @@ class Downloader:
             sys.exit(1)
         self.m3u8_url = m3u8_url
         self.output_mp4 = Path(output_file).absolute()
-        asyncio.run(self.main())
+        asyncio.run(self._main())
 
 
 def parse_headers(header=[]):
@@ -456,7 +458,7 @@ def parse_inputs():
     download_segment_header = args.download_segment_header
     segment_auto_referer = args.segment_auto_referer
     concurrency = max(args.concurrency, 1)
-    downloader = Downloader(
+    downloader = M3U8Downloader(
         pool_size=20,
         headers=parse_headers(header),
         download_m3u8_headers=parse_headers(download_m3u8_header),
@@ -471,12 +473,12 @@ def parse_inputs():
 
 def run_test():
     if sys.gettrace():
-        sys.argv.extend(
-            [
-                'https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_fmp4/v5/prog_index.m3u8',
-                r'D:\fallrainy\Downloads\新建文件夹 (3)\output.mp4', '-N', '3'
-            ]
-        )
+        # sys.argv.extend(
+        #     [
+        #         'https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_fmp4/v5/prog_index.m3u8',
+        #         r'D:\fallrainy\Downloads\新建文件夹 (3)\output.mp4', '-N', '3'
+        #     ]
+        # )
         # sys.argv.extend(
         #     [
         #         'https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/v5/prog_index.m3u8',
@@ -486,7 +488,21 @@ def run_test():
         # sys.argv.extend(
         #     ['https://cdn.jsdelivr.net/gh/nomeqc/static@main/video/encrypt.m3u8', r'D:\fallrainy\Downloads\新建文件夹 (3)\output2.mp4', '-N', '1']
         # )
+        # sys.argv.extend(
+        #     [
+        #         'https://ccp-bj29-video-preview.oss-enet.aliyuncs.com/lt/0A394CE28A619BFDA16766E0B7865F028038916D_194328959__sha1_bj29/FHD/media.m3u8?di=bj29&dr=2389069&f=633a7672138027e8e9cb44b388c3c352f3795901&security-token=CAIS%2BgF1q6Ft5B2yfSjIr5f7EdL6j6pijvGRan7SjlUfftgZq62Tlzz2IHFPeHJrBeAYt%2FoxmW1X5vwSlq5rR4QAXlDfNSqoWGeFqVHPWZHInuDox55m4cTXNAr%2BIhr%2F29CoEIedZdjBe%2FCrRknZnytou9XTfimjWFrXWv%2Fgy%2BQQDLItUxK%2FcCBNCfpPOwJms7V6D3bKMuu3OROY6Qi5TmgQ41Uh1jgjtPzkkpfFtkGF1GeXkLFF%2B97DRbG%2FdNRpMZtFVNO44fd7bKKp0lQLukMWr%2Fwq3PIdp2ma447NWQlLnzyCMvvJ9OVDFyN0aKEnH7J%2Bq%2FzxhTPrMnpkSlacGoABMy8YHsm0fDZ1H3W5AA3PXtDWFAwiVLlktVaZQcjdnR%2BL6T01CulZw%2FUhpq2Wb3FfbxYJANjIH4GM36GlsYhsbF1Z89JGhEatKHuRefecQ2c4Bi3H3cUpk7Wd%2FG6YHSeYlUgC%2F1vIzg%2BgoKGXBwnDcAYL5OyqeDnDTgUAvjdcMkI%3D&u=27fad97991e046e4b9431eff0831cd3f&x-oss-access-key-id=STS.NTNZhNbuC93zhXcjUJrW5Dh8u&x-oss-additional-headers=referer&x-oss-expires=1664790452&x-oss-process=hls%2Fsign&x-oss-signature=IEE2k4XVdBw%2FyyQuMPmAC6hFqb98x%2FhoeuOYqHqH1ho%3D&x-oss-signature-version=OSS2',
+        #         r'D:\fallrainy\Downloads\新建文件夹 (3)\愿某人1.mp4', '-N', '3', '--header', f'Referer: https://www.aliyundrive.com/'
+        #     ]
+        # )
+
+        sys.argv.extend(
+            [
+                r'E:\MyDocuments\GitHub\my-mv\playlist\阿木 - 有一种爱叫做放手.m3u8', r'D:\fallrainy\Downloads\新建文件夹 (3)\愿某人1.mp4', '-N', '3', '--header',
+                f'Referer: https://www.aliyundrive.com/'
+            ]
+        )
 
 
 if __name__ == '__main__':
+    # run_test()
     parse_inputs()
